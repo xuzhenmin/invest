@@ -1,0 +1,92 @@
+/* 期权链表格样式 */
+.dark-table-row-even {
+  background-color: #1a1a1a !important;
+}
+
+.dark-table-row-odd {
+  background-color: #2a2a2a !important;
+}
+
+/* 表头样式 */
+.ant-table-thead > tr > th {
+  background-color: #2a2a2a !important;
+  color: #ffffff !important;
+  border-bottom: 1px solid #333333 !important;
+  border-right: 1px solid #333333 !important;
+}
+
+/* 表格边框样式 */
+.ant-table {
+  border: 1px solid #333333 !important;
+}
+
+.ant-table-tbody > tr > td {
+  border-bottom: 1px solid #333333 !important;
+  border-right: 1px solid #333333 !important;
+}
+
+/* 移除表格内部的白线 */
+.ant-table-cell {
+  border-color: #333333 !important;
+}
+
+.ant-table-cell::before {
+  display: none !important;
+}
+
+/* 鼠标悬停效果 */
+.ant-table-tbody > tr:hover > td {
+  background-color: #333333 !important;
+}
+
+/* 分页器样式 */
+.ant-pagination {
+  color: #ffffff !important;
+}
+
+.ant-pagination-item {
+  background-color: #2a2a2a !important;
+  border-color: #333333 !important;
+}
+
+.ant-pagination-item a {
+  color: #ffffff !important;
+}
+
+.ant-pagination-item-active {
+  background-color: #00b578 !important;
+  border-color: #00b578 !important;
+}
+
+.ant-pagination-item-active a {
+  color: #ffffff !important;
+}
+
+.ant-pagination-prev .ant-pagination-item-link,
+.ant-pagination-next .ant-pagination-item-link {
+  background-color: #2a2a2a !important;
+  border-color: #333333 !important;
+  color: #ffffff !important;
+}
+
+.ant-pagination-disabled .ant-pagination-item-link {
+  background-color: #1a1a1a !important;
+  border-color: #333333 !important;
+  color: #666666 !important;
+}
+
+/* 移除表格选择器的边框 */
+.ant-table-selection {
+  border-color: #333333 !important;
+}
+
+/* 移除表格固定列的边框 */
+.ant-table-cell-fix-left,
+.ant-table-cell-fix-right {
+  border-color: #333333 !important;
+}
+
+/* 移除表格展开按钮的边框 */
+.ant-table-row-expand-icon {
+  border-color: #333333 !important;
+} 
