@@ -1,7 +1,7 @@
 fastapi==0.83.0
 uvicorn==0.17.0
 sqlalchemy==1.4.54
-pydantic==2.5.2
+pydantic==1.9.2
 python-dotenv==1.0.0
 requests==2.31.0
 python-jose==3.3.0
