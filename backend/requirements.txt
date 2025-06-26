@@ -11,4 +11,4 @@ bcrypt==4.0.1
 futu-api
 flask==2.0.3
 flask-cors==4.0.0
-pandas==2.2.1
+pandas==1.1.5
