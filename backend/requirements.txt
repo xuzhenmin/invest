@@ -2,13 +2,13 @@ fastapi==0.83.0
 uvicorn==0.17.0
 sqlalchemy==1.4.54
 pydantic==1.9.2
-python-dotenv==1.0.0
-requests==2.31.0
+python-dotenv==0.20.0
+requests==2.27.1
 python-jose==3.3.0
 passlib==1.7.4
-python-multipart==0.0.6
+python-multipart==0.0.5
 bcrypt==4.0.1
 futu-api
-flask==3.0.2
+flask==2.0.3
 flask-cors==4.0.0
 pandas==2.2.1
