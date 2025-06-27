@@ -1,10 +1,11 @@
 #!/bin/bash
 
+
 echo "Starting backend..."
 cd backend || exit # Change directory, exit if it fails
-source venv/bin/activate  # 激活虚拟环境
-export DEEPSEEK_API_KEY="your-api-key-here"  # 设置 Deepseek API Key
-nohup python3 app.py > ../backend_log.out 2>&1 & 
+#source venv/bin/activate  # 激活虚拟环境
+#export DEEPSEEK_API_KEY="your-api-key-here"  # 设置 Deepseek API Key
+nohup python app.py > ../backend_log.out 2>&1 & 
 BACKEND_PID=$!
 cd ..
 
