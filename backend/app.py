@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, session
 from flask_cors import CORS
 from futu import OpenQuoteContext, RET_OK, KLType, AuType, PeriodType # 添加 PeriodType
 from futu.common.constant import OptionType, SecurityType # 从正确的路径导入 OptionType 和 SecurityType
@@ -13,6 +13,24 @@ import json
 import os
 from dotenv import load_dotenv
 import talib  # 使用 ta-lib 替代 ta
+import sys
+sys.path.append(os.path.dirname(__file__))
+import threading
+import time
+
+# 强制导入quant.py相关方法，确保batch_market_snapshot可用
+from quant import get_stock_list, get_stock_capital_flow, get_stock_financials, quant_get_stock_kline, get_stock_news, batch_market_snapshot, get_hk_minute_data, analyze_fundamental, load_latest_smart_monitor_signals, load_all_smart_monitor_signals
+
+try:
+    from quant import get_stock_list, get_stock_capital_flow, get_stock_financials, quant_get_stock_kline, get_stock_news, batch_market_snapshot, get_hk_minute_data
+except ImportError:
+    get_stock_list = None
+    get_stock_capital_flow = None
+    get_stock_financials = None
+    quant_get_stock_kline = None
+    get_stock_news = None
+
+from service.stock_service import get_stock_data as svc_get_stock_data
 
 # 配置日志
 logging.basicConfig(
@@ -65,6 +83,97 @@ sec_type_map = {
     'DRVT': SecurityType.DRVT    # 对应整数值 8
 }
 
+# 简单内存存储，后续可换为数据库
+user_watchlist_store = {}
+
+import json
+import threading
+import os
+
+user_config_file = os.path.join(os.path.dirname(__file__), 'user_watchlist_store.json')
+user_config_lock = threading.Lock()
+
+def load_user_config():
+    if not os.path.exists(user_config_file):
+        return {}
+    with user_config_lock:
+        with open(user_config_file, 'r', encoding='utf-8') as f:
+            try:
+                return json.load(f)
+            except Exception:
+                return {}
+
+def save_user_config(data):
+    with user_config_lock:
+        with open(user_config_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+import json
+import threading
+import os
+
+monitor_config_file = os.path.join(os.path.dirname(__file__), 'user_monitor_config.json')
+monitor_config_lock = threading.Lock()
+
+def load_monitor_config():
+    if not os.path.exists(monitor_config_file):
+        return {}
+    with monitor_config_lock:
+        with open(monitor_config_file, 'r', encoding='utf-8') as f:
+            try:
+                return json.load(f)
+            except Exception:
+                return {}
+
+def save_monitor_config(data):
+    with monitor_config_lock:
+        with open(monitor_config_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+import json
+import threading
+import os
+
+monitor_status_file = os.path.join(os.path.dirname(__file__), 'user_monitor_status.json')
+monitor_status_lock = threading.Lock()
+
+def load_monitor_status():
+    if not os.path.exists(monitor_status_file):
+        return {}
+    with monitor_status_lock:
+        with open(monitor_status_file, 'r', encoding='utf-8') as f:
+            try:
+                return json.load(f)
+            except Exception:
+                return {}
+
+def save_monitor_status(data):
+    with monitor_status_lock:
+        with open(monitor_status_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+import json
+import threading
+import os
+
+strategy_log_file = os.path.join(os.path.dirname(__file__), 'user_strategy_exec_log.json')
+strategy_log_lock = threading.Lock()
+
+def load_strategy_log():
+    if not os.path.exists(strategy_log_file):
+        return {}
+    with strategy_log_lock:
+        with open(strategy_log_file, 'r', encoding='utf-8') as f:
+            try:
+                return json.load(f)
+            except Exception:
+                return {}
+
+def save_strategy_log(data):
+    with strategy_log_lock:
+        with open(strategy_log_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
 @app.route('/api/kline', methods=['GET'])
 def get_kline():
     try:
@@ -72,7 +181,7 @@ def get_kline():
         kline_data = get_kline_data(symbol)
         if not kline_data:
             return jsonify({'error': '未找到K线数据'}), 404
-        return jsonify(kline_data)
+            return jsonify(kline_data)
     except Exception as e:
         error_msg = f"Error in get_kline: {str(e)}"
         logger.error(error_msg)
@@ -80,55 +189,36 @@ def get_kline():
         return jsonify({'error': error_msg}), 500
 
 @app.route('/api/stock/<symbol>')
-def get_stock_data(symbol):
+def get_stock_data(symbol, as_dict=False):
     try:
-        # 解析股票代码和市场
-        code_parts = symbol.split('.')
-        if len(code_parts) != 2:
-            return jsonify({'error': 'Invalid stock code format. Expected format: CODE.MARKET (e.g., 00700.HK)'}), 400
-        
-        stock_code = code_parts[0]
-        market = code_parts[1].upper()
-        
-        # 获取实时行情
-        quote_ctx = OpenQuoteContext(host='127.0.0.1', port=11111)
-        ret, data = quote_ctx.get_market_snapshot([f'{market}.{stock_code}'])
-        quote_ctx.close()
-        
-        if ret != RET_OK:
-            error_msg = f"Failed to get market snapshot: {data}"
-            logger.error(error_msg)
-            return jsonify({'error': error_msg}), 500
-            
-        if data.empty:
-            return jsonify({'error': '未找到股票数据'}), 404
-            
-        stock_data = data.iloc[0]
-        return jsonify({
-            'code': symbol,
-            'name': stock_data['name'],
-            'current_price': float(stock_data['last_price']),
-            'open_price': float(stock_data['open_price']),
-            'high_price': float(stock_data['high_price']),
-            'low_price': float(stock_data['low_price']),
-            'pre_close': float(stock_data['prev_close_price']),
-            'volume': int(stock_data['volume']),
-            'turnover': float(stock_data['turnover']),
-            'update_time': stock_data['update_time']
-        })
+        data = svc_get_stock_data(symbol, as_dict, batch_market_snapshot)
+        if as_dict:
+            return data
+        return jsonify(data)
     except Exception as e:
         error_msg = f"Error in get_stock_data: {str(e)}"
         logger.error(error_msg)
         logger.error(traceback.format_exc())
+        if as_dict:
+            return {'error': error_msg}
         return jsonify({'error': error_msg}), 500
 
 @app.route('/api/stock/<symbol>/kline')
 def get_stock_kline(symbol):
     try:
-        kline_data = get_kline_data(symbol)
-        if not kline_data:
+        # 自动补全 start/end 参数，取近两年
+        from datetime import datetime, timedelta
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
+        kline_data = quant_get_stock_kline(symbol, start_date, end_date)
+        if not kline_data is None and hasattr(kline_data, 'empty') and kline_data.empty:
             return jsonify({'error': '未找到K线数据'}), 404
-        return jsonify(kline_data)
+        # DataFrame 转 list
+        if hasattr(kline_data, 'to_dict'):
+            kline_list = kline_data.fillna('').to_dict(orient='records')
+        else:
+            kline_list = kline_data
+        return jsonify(kline_list)
     except Exception as e:
         error_msg = f"Error in get_stock_kline: {str(e)}"
         logger.error(error_msg)
@@ -215,7 +305,7 @@ def get_option_chain_data(symbol):
                 'optionChain': [],
                 'message': '当前仅支持港股市场的期权链数据'
             }), 200
-        
+
         # 获取期权链数据
         # start=None, end=None 默认获取当前日期到未来30天的期权链
         ret, data = quote_ctx.get_option_chain(code=f'{market}.{stock_code}', start=None, end=None)
@@ -342,9 +432,14 @@ def get_capital_flow(symbol):
         if quote_ctx is None:
             return jsonify({'error': 'Futu API connection failed'}), 500
 
+        # 使用 parse_stock_code 拆分 symbol
+        stock_code, market = parse_stock_code(symbol)
+        if not stock_code or not market:
+            return jsonify({'error': f'无效的股票代码格式: {symbol}'}), 400
+
         # 获取历史资金流向数据（最近一年）
         ret, historical_data = quote_ctx.get_capital_flow(
-            stock_code=f'HK.{symbol}',
+            stock_code=f'{market}.{stock_code}',
             period_type=PeriodType.DAY,
             start=None,  # 默认获取最近一年数据
             end=None
@@ -357,7 +452,7 @@ def get_capital_flow(symbol):
 
         # 获取当日资金流向数据
         ret, intraday_data = quote_ctx.get_capital_flow(
-            stock_code=f'HK.{symbol}',
+            stock_code=f'{market}.{stock_code}',
             period_type=PeriodType.INTRADAY
         )
 
@@ -370,8 +465,11 @@ def get_capital_flow(symbol):
         historical_flow = []
         if not historical_data.empty:
             for _, row in historical_data.iterrows():
+                # 日期只保留年月日
+                date_str = str(row['capital_flow_item_time'])
+                date_only = date_str.split(' ')[0] if ' ' in date_str else date_str
                 historical_flow.append({
-                    'date': row['capital_flow_item_time'],
+                    'date': date_only,
                     'in_flow': float(row['in_flow']),
                     'main_in_flow': float(row['main_in_flow']),
                     'super_in_flow': float(row['super_in_flow']),
@@ -384,8 +482,11 @@ def get_capital_flow(symbol):
         intraday_flow = []
         if not intraday_data.empty:
             for _, row in intraday_data.iterrows():
+                # 时间只保留年月日
+                time_str = str(row['capital_flow_item_time'])
+                date_only = time_str.split(' ')[0] if ' ' in time_str else time_str
                 intraday_flow.append({
-                    'time': row['capital_flow_item_time'],
+                    'time': date_only,
                     'in_flow': float(row['in_flow']),
                     'super_in_flow': float(row['super_in_flow']),
                     'big_in_flow': float(row['big_in_flow']),
@@ -463,7 +564,7 @@ def parse_stock_code(symbol):
         market = code_parts[1].upper()
         
         # Validate market
-        if market not in ['SH', 'SZ', 'HK']:
+        if market not in ['SH', 'SZ', 'HK', 'US']:
             return None, None
             
         return stock_code, market
@@ -2271,6 +2372,699 @@ def ak_get_kline_data(symbol, start_date, end_date):
         import traceback
         logger.error(f"ak_get_kline_data error: {e}\n{traceback.format_exc()}")
         return []
+
+@app.route('/quant/stock_list')
+def quant_stock_list_flask():
+    print("进入 quant_stock_list_flask")
+    market = request.args.get('market', '').upper()
+    try:
+        logger.info("调用 get_stock_list 前, market=%s", market)
+        data = get_stock_list(market)
+        logger.info("调用 get_stock_list 后, data type=%s", type(data))
+        print("data type:", type(data))
+        print("data repr:", repr(data))
+        if data is None:
+            return jsonify({'error': 'get_stock_list 返回 None'}), 500
+        return jsonify(data.fillna('').to_dict(orient='records'))
+    except Exception as e:
+        logger.error("except: %s", traceback.format_exc())
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+@app.route('/quant/kline')
+def quant_kline_flask():
+    symbol = request.args.get('symbol', '')
+    start = request.args.get('start', '')
+    end = request.args.get('end', '')
+    try:
+        from quant import quant_get_stock_kline
+        data = quant_get_stock_kline(symbol, start, end)
+        if isinstance(data, pd.DataFrame):
+            return jsonify(data.fillna('').to_dict(orient='records'))
+        else:
+            return jsonify({'error': 'quant_get_stock_kline 未返回 DataFrame', 'type': str(type(data))}), 500
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+@app.route('/quant/capital_flow')
+def quant_capital_flow_flask():
+    symbol = request.args.get('symbol', '')
+    try:
+        if not get_stock_capital_flow:
+            return jsonify({'error': 'quant.py未集成'}), 500
+        data = get_stock_capital_flow(symbol)
+        return jsonify(data.fillna('').to_dict(orient='records'))
+    except Exception as e:
+        print(traceback.format_exc())
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+@app.route('/quant/news')
+def quant_news_flask():
+    symbol = request.args.get('symbol', '')
+    try:
+        if not get_stock_news:
+            return jsonify({'error': 'quant.py未集成'}), 500
+        data = get_stock_news(symbol)
+        from flask import Response
+        if isinstance(data, Response):
+            return data
+        if isinstance(data, pd.DataFrame):
+            return jsonify(data.fillna('').to_dict(orient='records'))
+        else:
+            return jsonify({'error': 'get_stock_news 未返回 DataFrame', 'type': str(type(data))}), 500
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        import logging
+        logging.error(traceback.format_exc())
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+@app.route('/quant/financials')
+def quant_financials_flask():
+    symbol = request.args.get('symbol', '')
+    try:
+        if not get_stock_financials:
+            return jsonify({'error': 'quant.py未集成'}), 500
+        data = get_stock_financials(symbol)
+        return jsonify(data.fillna('').to_dict(orient='records'))
+    except Exception as e:
+        print(traceback.format_exc())
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+@app.route('/quant/analyze')
+def quant_analyze_flask():
+    symbol = request.args.get('symbol', '')
+    try:
+        from quant import analyze_stock
+        result = analyze_stock(symbol)
+        return jsonify(result)
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+@app.route('/quant/elliott_wave')
+def quant_elliott_wave_flask():
+    symbol = request.args.get('symbol', '')
+    try:
+        from quant import analyze_elliott_wave
+        result = analyze_elliott_wave(symbol)
+        return jsonify(result)
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+@app.route('/watchlist', methods=['GET', 'POST'])
+def watchlist():
+    if request.method == 'GET':
+        user_id = request.args.get('userId', '')
+        all_data = load_user_config()
+        data = all_data.get(user_id, {
+            'userId': user_id,
+            'stocks': [],
+            'frequency': '5min',
+            'rules': [],
+            'alerts': []
+        })
+        return jsonify(data)
+    elif request.method == 'POST':
+        data = request.get_json(force=True)
+        user_id = data.get('userId', '')
+        if not user_id:
+            return jsonify({'error': 'userId必填'}), 400
+        all_data = load_user_config()
+        all_data[user_id] = data
+        save_user_config(all_data)
+        return jsonify({'status': 'ok', 'msg': '设置已保存'})
+
+@app.route('/watchlist/save/monitor', methods=['POST'])
+def save_monitor():
+    data = request.get_json(force=True)
+    user_id = data.get('userId', '')
+    if not user_id:
+        return jsonify({'error': 'userId必填'}), 400
+    all_data = load_monitor_config()
+    all_data[user_id] = data
+    save_monitor_config(all_data)
+    return jsonify({'status': 'ok', 'msg': '监控配置已保存'})
+
+@app.route('/watchlist/query/monitor', methods=['GET'])
+def query_monitor():
+    user_id = request.args.get('userId', '')
+    all_data = load_monitor_config()
+    data = all_data.get(user_id, {})
+    return jsonify(data)
+
+@app.route('/watchlist/<rule>/execute', methods=['POST'])
+def execute_watchlist_rule(rule):
+    data = request.get_json(force=True)
+    user_id = data.get('userId', '')
+    if not user_id:
+        return {'error': 'userId必填'}, 400
+    all_data = load_monitor_config()
+    user_conf = all_data.get(user_id)
+    if not user_conf:
+        return {'error': '未找到该用户配置'}, 404
+    stocks = user_conf.get('stocks', [])
+    if isinstance(stocks, str):
+        stocks = [s.strip() for s in stocks.split(',') if s.strip()]
+    rules = user_conf.get('rules', [])
+    if rule not in rules:
+        return {'error': f'用户未选择该规则: {rule}'}, 400
+    results = []
+    execute_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    monitor_status = load_monitor_status()
+    for symbol in stocks:
+        # 获取股票名称
+        name = symbol
+        try:
+            stock_info = get_stock_data(symbol)
+            if isinstance(stock_info, dict) and stock_info.get('name'):
+                name = stock_info['name']
+            elif hasattr(stock_info, 'json'):
+                stock_json = stock_info.json if not callable(stock_info.json) else stock_info.json()
+                if isinstance(stock_json, dict) and stock_json.get('name'):
+                    name = stock_json['name']
+        except Exception:
+            name = symbol
+        result_item = {
+            'stock': symbol,
+            'name': name,
+            'rule': rule,
+            'execute_time': execute_time,
+            'status': 'success',
+            'reason': '',
+            'market_data': None,
+            'extra': None,
+            'hit': False
+        }
+        # 获取最近交易日日期
+        trade_date = None
+        try:
+            snapshot = get_stock_data(symbol, as_dict=True)
+            trade_time = snapshot.get('update_time')
+            if trade_time:
+                trade_date = str(trade_time)[:10]
+            else:
+                kline = get_kline_data(symbol)
+                if kline and len(kline) > 0:
+                    last_time = kline[-1].get('time')
+                    if last_time:
+                        trade_date = str(last_time)[:10]
+        except Exception:
+            trade_date = datetime.now().strftime('%Y-%m-%d')
+        if rule == 'wave3_start':
+            try:
+                from quant import analyze_elliott_wave
+                result = analyze_elliott_wave(symbol)
+                # 直接用 is_wave3_start 字段作为 hit
+                hit = bool(result.get('is_wave3_start', False))
+                desc = result.get('desc') or result.get('description') or ''
+                main_wave = result.get('mainWave') or result.get('main_wave')
+                wave_signal = result.get('signal') or result.get('waveSignal')
+                detailed_reason = result.get('reason', '')
+                pattern_analysis = ''
+                if (wave_signal and '符合' in wave_signal) or ('符合' in desc):
+                    pattern_analysis = '符合三浪形态'
+                elif (wave_signal and '不符合' in wave_signal) or ('不符合' in desc):
+                    pattern_analysis = '不符合三浪形态'
+                result_item['hit'] = hit
+                result_item['reason'] = f"三浪信号: {'命中' if hit else '未命中'}，{desc}" if desc else ("三浪信号: 命中" if hit else "三浪信号: 未命中")
+                # 获取最新行情信息
+                try:
+                    kline = get_kline_data(symbol)
+                    if kline and len(kline) >= 2:
+                        pct = (kline[-1]['close'] - kline[-2]['close']) / kline[-2]['close'] * 100
+                        result_item['market_data'] = {
+                            'close': kline[-1]['close'],
+                            'pre_close': kline[-2]['close'],
+                            'pct_change': round(pct,2),
+                            'trigger_time': kline[-1]['time'] if 'time' in kline[-1] else None,
+                            'main_wave': main_wave,
+                            'wave_signal': wave_signal,
+                            'desc': desc
+                        }
+                    else:
+                        result_item['market_data'] = {
+                            'main_wave': main_wave,
+                            'wave_signal': wave_signal,
+                            'desc': desc
+                        }
+                except Exception:
+                    result_item['market_data'] = {
+                        'main_wave': main_wave,
+                        'wave_signal': wave_signal,
+                        'desc': desc
+                    }
+                # 形态分析补充信息
+                if not pattern_analysis:
+                    pattern_analysis = '符合三浪形态' if hit else '不符合三浪形态'
+                result_item['extra'] = {'形态分析': pattern_analysis, '详细分析': detailed_reason}
+            except Exception as e:
+                result_item['status'] = 'fail'
+                result_item['reason'] = str(e)
+                result_item['extra'] = {'原因': str(e)}
+        elif rule == 'down_channel_start':
+            try:
+                from quant import analyze_down_channel
+                result = analyze_down_channel(symbol, window=20)
+                hit = bool(result.get('is_down_channel', False))
+                reason = result.get('reason', '')
+                detail = result.get('detail', '')
+                kline = get_kline_data(symbol)
+                closes = [item['close'] for item in kline[-20:]] if kline and len(kline) >= 20 else []
+                # 获取最新快照
+                snapshot = get_stock_data(symbol, as_dict=True)
+                close = snapshot.get('current_price')
+                pre_close = snapshot.get('pre_close')
+                pct_change = round((close - pre_close) / pre_close * 100, 2) if close is not None and pre_close else None
+                result_item['hit'] = hit
+                result_item['reason'] = reason
+                result_item['market_data'] = {
+                    'close': close,
+                    'pre_close': pre_close,
+                    'pct_change': pct_change,
+                    'trigger_time': snapshot.get('update_time'),
+                    'min_close_20d': min(closes) if closes else None
+                }
+                result_item['extra'] = {'形态分析': '下降通道开启' if hit else '未形成下降通道', '详细分析': detail}
+            except Exception as e:
+                result_item['status'] = 'fail'
+                result_item['reason'] = str(e)
+                result_item['extra'] = {'原因': str(e)}
+        elif rule == 'pct_change_5':
+            try:
+                # 优化：直接用快照接口，不查K线
+                stock_info = get_stock_data(symbol, as_dict=True)
+                if isinstance(stock_info, dict):
+                    close = stock_info.get('current_price')
+                    pre_close = stock_info.get('pre_close')
+                elif hasattr(stock_info, 'json'):
+                    stock_json = stock_info.json if not callable(stock_info.json) else stock_info.json()
+                    close = stock_json.get('current_price')
+                    pre_close = stock_json.get('pre_close')
+                else:
+                    close = None
+                    pre_close = None
+                if close is not None and pre_close is not None and pre_close != 0:
+                    pct = (close - pre_close) / pre_close * 100
+                    hit = abs(pct) >= 5
+                    result_item['reason'] = f"涨跌幅: {round(pct,2)}%，{'命中' if hit else '未命中'}"
+                    result_item['market_data'] = {
+                        'close': close,
+                        'pre_close': pre_close,
+                        'pct_change': round(pct,2),
+                        'trigger_time': None
+                    }
+                    result_item['hit'] = hit
+                    result_item['extra'] = {
+                        '涨跌幅分析': f"最新价: {close}，前收: {pre_close}，涨跌幅: {round(pct,2)}%",
+                        '命中情况': '涨跌幅绝对值大于等于5%' if hit else '涨跌幅绝对值小于5%'
+                    }
+                else:
+                    result_item['status'] = 'fail'
+                    result_item['reason'] = '快照数据不足，无法计算涨跌幅'
+                    result_item['extra'] = {'涨跌幅分析': '快照数据不足，无法计算涨跌幅'}
+            except Exception as e:
+                logger.error(f"pct_change_5 rule error: {e}")
+                logger.error(traceback.format_exc())
+                result_item['status'] = 'fail'
+                result_item['reason'] = str(e)
+                result_item['extra'] = {'原因': str(e)}
+        elif rule == 'multi_factor_entry_exit':
+            try:
+                from quant import analyze_multi_factor_entry_exit
+                result = analyze_multi_factor_entry_exit(symbol)
+                hit = bool(result.get('is_entry', False))
+                reason = result.get('reason', '')
+                detail = result.get('detail', {})
+                # 获取最新快照
+                snapshot = get_stock_data(symbol, as_dict=True)
+                close = snapshot.get('current_price')
+                pre_close = snapshot.get('pre_close')
+                pct_change = round((close - pre_close) / pre_close * 100, 2) if close is not None and pre_close else None
+                result_item['hit'] = hit
+                result_item['reason'] = reason
+                result_item['market_data'] = {
+                    'close': close,
+                    'pre_close': pre_close,
+                    'pct_change': pct_change,
+                    'trigger_time': snapshot.get('update_time')
+                }
+                result_item['extra'] = detail
+            except Exception as e:
+                result_item['status'] = 'fail'
+                result_item['reason'] = str(e)
+                result_item['extra'] = {'原因': str(e)}
+        elif rule == 'undervalued_stock':
+            try:
+                from quant import analyze_undervalued_stock
+                result = analyze_undervalued_stock(symbol)
+                hit = bool(result.get('is_undervalued', False))
+                reason = result.get('reason', '')
+                valuation = result.get('valuation', '')
+                result_item['hit'] = hit
+                result_item['reason'] = reason
+                result_item['extra'] = {
+                    'valuation': valuation,
+                    'fundamental': result.get('fundamental', {})
+                }
+            except Exception as e:
+                result_item['status'] = 'fail'
+                result_item['reason'] = str(e)
+                result_item['extra'] = {'原因': str(e)}
+        elif rule == 'active_smallmidcap_stock':
+            try:
+                from quant import analyze_active_smallmidcap_stock
+                result = analyze_active_smallmidcap_stock(symbol)
+                hit = bool(result.get('is_active', False))
+                reason = result.get('reason', '')
+                detail = result.get('detail', {})
+                # 获取最新快照
+                snapshot = get_stock_data(symbol, as_dict=True)
+                close = snapshot.get('current_price')
+                pre_close = snapshot.get('pre_close')
+                pct_change = round((close - pre_close) / pre_close * 100, 2) if close is not None and pre_close else None
+                result_item['hit'] = hit
+                result_item['reason'] = reason
+                result_item['market_data'] = {
+                    'close': close,
+                    'pre_close': pre_close,
+                    'pct_change': pct_change,
+                    'trigger_time': snapshot.get('update_time')
+                }
+                result_item['extra'] = detail
+            except Exception as e:
+                result_item['status'] = 'fail'
+                result_item['reason'] = str(e)
+                result_item['extra'] = {'原因': str(e)}
+        else:
+            result_item['status'] = 'fail'
+            result_item['reason'] = '不支持的规则'
+            result_item['extra'] = {'原因': '不支持的规则'}
+        # --- 新增命中时间逻辑 ---
+        user_status = monitor_status.setdefault(user_id, {})
+        symbol_status = user_status.setdefault(symbol, {})
+        rule_status = symbol_status.setdefault(rule, {})
+        prev_hit = rule_status.get('hit', False)
+        hit_start_time = rule_status.get('hit_start_time')
+        hit_end_time = rule_status.get('hit_end_time')
+        if result_item['hit']:
+            if not prev_hit:
+                # 首次命中，记录入场时间为最近交易日
+                hit_start_time = trade_date
+                hit_end_time = None
+            # 命中时不更新结束时间
+        else:
+            if prev_hit:
+                # 从命中变为未命中，记录出场时间为最近交易日
+                hit_end_time = trade_date
+            # 未命中时不更新开始时间
+        # 更新状态
+        rule_status['hit'] = result_item['hit']
+        rule_status['hit_start_time'] = hit_start_time
+        rule_status['hit_end_time'] = hit_end_time
+        result_item['hit_start_time'] = hit_start_time
+        result_item['hit_end_time'] = hit_end_time
+        # ---
+        results.append(result_item)
+        time.sleep(0.3)  # 每只股票间隔0.3秒，防止限流
+    save_monitor_status(monitor_status)
+    # --- 新增：存储本次执行记录 ---
+    today = datetime.now().strftime('%Y-%m-%d')
+    strategy_log = load_strategy_log()
+    user_log = strategy_log.setdefault(today, {}).setdefault(user_id, [])
+    # 追加本次执行结果（每次为一组results）
+    user_log.append({
+        'execute_time': execute_time,
+        'results': results
+    })
+    # 按 execute_time 倒序排序
+    user_log.sort(key=lambda x: x['execute_time'], reverse=True)
+    save_strategy_log(strategy_log)
+    # ---
+    # --- 修正：更新 user_monitor_config.json 的 alerts 字段为最新 results ---
+    all_data[user_id]['alerts'] = results
+    save_monitor_config(all_data)
+    # ---
+    return jsonify({'results': results})
+
+@app.route('/watchlist/last_result', methods=['GET'])
+def get_last_result():
+    user_id = request.args.get('userId', '')
+    if not user_id:
+        return {'error': 'userId必填'}, 400
+    today = datetime.now().strftime('%Y-%m-%d')
+    strategy_log = load_strategy_log()
+    user_log = strategy_log.get(today, {}).get(user_id, [])
+    if not user_log:
+        return {'results': []}
+    # 取最新一组 results
+    latest = user_log[0]
+    return {'results': latest.get('results', [])}
+
+@app.route('/api/stock/batch', methods=['GET', 'POST'])
+def get_stock_data_batch():
+    try:
+        # 支持GET参数和POST JSON
+        if request.method == 'POST':
+            if request.is_json:
+                symbols = request.json.get('symbols', [])
+                if isinstance(symbols, str):
+                    symbols = [s.strip() for s in symbols.split(',') if s.strip()]
+            else:
+                return jsonify({'error': 'POST需传递JSON格式，包含symbols字段'}), 400
+        else:
+            symbols = request.args.get('symbols', '')
+            symbols = [s.strip() for s in symbols.split(',') if s.strip()]
+        if not symbols or not isinstance(symbols, list):
+            return jsonify({'error': '请提供symbols参数，如600519.SH,00700.HK'}), 400
+        logger.info(f"[get_stock_data_batch] 批量查询快照 symbols={symbols}")
+        result = batch_market_snapshot(symbols)
+        # logger.info(f"[get_stock_data_batch] batch_market_snapshot返回: {result}")
+        data = {}
+        for symbol in symbols:
+            code_parts = symbol.split('.')
+            code, market = code_parts[0], code_parts[1].upper() if len(code_parts) == 2 else ('', '')
+            norm_symbol = f"{market}.{code.zfill(5) if market=='HK' and code.isdigit() else code}"
+            stock_data = None
+            if symbol in result:
+                stock_data = result[symbol]
+            elif norm_symbol in result:
+                stock_data = result[norm_symbol]
+            elif len(result) == 1:
+                stock_data = list(result.values())[0]
+            if not stock_data:
+                data[symbol] = {'error': '未找到股票数据'}
+                continue
+            data[symbol] = {
+                'code': symbol,
+                'name': stock_data.get('name'),
+                'current_price': float(stock_data.get('last_price', 0)),
+                'open_price': float(stock_data.get('open_price', 0)),
+                'high_price': float(stock_data.get('high_price', 0)),
+                'low_price': float(stock_data.get('low_price', 0)),
+                'pre_close': float(stock_data.get('prev_close_price', 0)),
+                'volume': int(stock_data.get('volume', 0)),
+                'turnover': float(stock_data.get('turnover', 0)),
+                'update_time': stock_data.get('update_time')
+            }
+        return jsonify(data)
+    except Exception as e:
+        error_msg = f"Error in get_stock_data_batch: {str(e)}"
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        return jsonify({'error': error_msg}), 500
+
+@app.route('/api/stock/<symbol>/minute')
+def get_stock_minute(symbol):
+    """
+    查询分时数据，支持A股、港股、美股。返回格式：[{time, price, volume}]
+    """
+    try:
+        import akshare as ak
+        import pandas as pd
+        code_parts = symbol.split('.')
+        if len(code_parts) != 2:
+            return jsonify({'error': 'Invalid stock code format. Expected format: CODE.MARKET (e.g., 00700.HK)'}), 400
+        stock_code = code_parts[0]
+        market = code_parts[1].upper()
+        data = []
+        if market in ['SH', 'SZ']:
+            # 优先用东方财富接口
+            try:
+                # 东方财富接口需要无前缀代码和market_code
+                market_code = '1' if market == 'SH' or stock_code.startswith('6') else '0'
+                df = ak.stock_zh_a_hist_min_em(symbol=stock_code, period='1')
+                if not df.empty:
+                    df = df.rename(columns={'时间': 'time', '收盘': 'price', '成交量': 'volume'})
+                    data = df[['time', 'price', 'volume']].fillna('').to_dict(orient='records')
+            except Exception as e:
+                # 降级用新浪接口（需sh/sz前缀）
+                try:
+                    sina_code = ('sh' if market == 'SH' or stock_code.startswith('6') else 'sz') + stock_code
+                    df = ak.stock_zh_a_minute(symbol=sina_code, period='1')
+                    if not df.empty:
+                        # 新浪接口字段：day, open, high, low, close, volume
+                        df = df.rename(columns={'day': 'time', 'close': 'price', 'volume': 'volume'})
+                        data = df[['time', 'price', 'volume']].fillna('').to_dict(orient='records')
+                except Exception as e2:
+                    data = []
+        elif market == 'HK':
+            try:
+                from quant import get_hk_minute_data
+                data = get_hk_minute_data(symbol, quote_ctx)
+            except Exception as e:
+                data = []
+        elif market == 'US':
+            # 美股分时（akshare暂不支持1m，返回空）
+            data = []
+        else:
+            data = []
+        return jsonify(data)
+    except Exception as e:
+        import traceback
+        error_msg = f"Error in get_stock_minute: {str(e)}"
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        return jsonify({'error': error_msg}), 500
+
+@app.route('/api/stock/<symbol>/financials')
+def get_stock_financials_api(symbol):
+    try:
+        if not get_stock_financials:
+            return jsonify({'error': 'quant.py未集成'}), 500
+        data = get_stock_financials(symbol)
+        if data is None or (hasattr(data, 'empty') and data.empty):
+            return jsonify({'error': '未找到财务数据'}), 404
+        return jsonify(data.fillna('').to_dict(orient='records'))
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+@app.route('/api/stock/<symbol>/fundamental')
+def get_stock_fundamental(symbol):
+    try:
+        result = analyze_fundamental(symbol)
+        return jsonify(result)
+    except Exception as e:
+        import traceback
+        logger.error(f"/api/stock/<symbol>/fundamental error: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+@app.route('/quant/smart_monitor_signals')
+def quant_smart_monitor_signals():
+    try:
+        data = load_latest_smart_monitor_signals()
+        return jsonify({'signals': data})
+    except Exception as e:
+        import traceback
+        logger.error(f"[quant_smart_monitor_signals] {e}\n{traceback.format_exc()}")
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+@app.route('/quant/smart_monitor_signals_by_stock', methods=['POST'])
+def quant_smart_monitor_signals_by_stock():
+    try:
+        data = request.get_json(force=True)
+        logger.info(f"[smart_monitor_signals_by_stock] 入参: {data}")
+        symbols = data.get('symbols', [])
+        limit = int(data.get('limit', 5))
+        # 1. 先执行盯盘分析，写入最新数据
+        try:
+            from quant import smart_watchlist_monitor
+            smart_watchlist_monitor(symbols)
+        except Exception as e:
+            logger.error(f"smart_watchlist_monitor error: {e}")
+        # 2. 加载全部历史数据
+        all_signals = load_all_smart_monitor_signals()
+        # 3. 聚合每个标的的所有事件，只保留time和signal字段，去重并合并同日同signal
+        from collections import defaultdict
+        import datetime
+        result = {}
+        for symbol in symbols:
+            # 收集所有事件
+            raw_events = []
+            for time_key in sorted(all_signals.keys(), reverse=True):
+                for event in all_signals[time_key]:
+                    if event.get('stock') == symbol:
+                        raw_events.append({
+                            'time': event.get('time'),
+                            'signal': event.get('signal'),
+                            'signal_type': event.get('signal_type') if 'signal_type' in event else None,
+                            'value': event.get('value') if 'value' in event else None
+                        })
+            # 1. 按 time+signal 去重
+            seen = set()
+            deduped = []
+            for ev in raw_events:
+                key = (ev['time'], ev['signal'])
+                if key not in seen:
+                    deduped.append(ev)
+                    seen.add(key)
+            # 2. 按日期+signal 合并，计数，保留最新time
+            merged = {}
+            for ev in deduped:
+                # 取日期部分
+                import datetime
+                try:
+                    dt = datetime.datetime.strptime(ev['time'], '%Y-%m-%d %H:%M:%S')
+                except Exception:
+                    try:
+                        dt = datetime.datetime.strptime(ev['time'], '%Y-%m-%d')
+                    except Exception:
+                        continue
+                day = dt.strftime('%Y-%m-%d')
+                sig = ev['signal']
+                key = (day, sig)
+                if key not in merged:
+                    merged[key] = {'time': ev['time'], 'signal': sig, 'signal_type': ev.get('signal_type'), 'value': ev.get('value'), 'count': 1}
+                else:
+                    # 保留最新time
+                    if ev['time'] > merged[key]['time']:
+                        merged[key]['time'] = ev['time']
+                    merged[key]['count'] += 1
+            # 3. 生成最终事件列表，按time倒序
+            merged_events = []
+            for (day, sig), v in merged.items():
+                signal_text = v['signal']
+                if v['count'] > 1:
+                    if 'x' in signal_text and signal_text.endswith(')'):
+                        # 避免重复叠加
+                        signal_text = signal_text.rsplit('x', 1)[0].rstrip()
+                    signal_text = f"{signal_text} x{v['count']}"
+                merged_events.append({
+                    'time': v['time'],
+                    'signal': signal_text,
+                    'signal_type': v.get('signal_type'),
+                    'value': v.get('value')
+                })
+            merged_events = sorted(merged_events, key=lambda x: x['time'], reverse=True)
+            result[symbol] = merged_events
+        logger.info(f"[smart_monitor_signals_by_stock] 返回: { {k: len(v) for k,v in result.items()} }")
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error in quant_smart_monitor_signals_by_stock: {e}\n{traceback.format_exc()}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/quant/capital_distribution')
+def quant_capital_distribution_flask():
+    symbol = request.args.get('symbol', '')
+    try:
+        from quant import get_capital_distribution
+        data = get_capital_distribution(symbol)
+        # 转为dict以便jsonify
+        if hasattr(data, 'to_dict'):
+            return jsonify(data.to_dict(orient='records'))
+        else:
+            return jsonify(data)
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=True) 
