@@ -23,7 +23,7 @@ const TradingViewKLineChart = ({ klineData }) => {
         return;
     }
 
-    if (chartInstanceRef.current) 
+    if (chartInstanceRef.current) {
       console.log("Removing previous chart instance.");
       chartInstanceRef.current.remove();
       chartInstanceRef.current = null;
@@ -149,7 +149,22 @@ const TradingViewKLineChart = ({ klineData }) => {
   }, [klineData]);
 
   return (
-    <div ref={chartContainerRef} style={{ width: '100%', height: '400px' }} />
+    <div
+      ref={chartContainerRef}
+      style={{
+        width: '100%',
+        height: '100%',
+        minHeight: 320,
+        background: '#181c24',
+        borderRadius: 8,
+        boxSizing: 'border-box',
+        padding: 0,
+        margin: 0,
+        display: 'flex',
+        alignItems: 'stretch',
+        justifyContent: 'stretch',
+      }}
+    />
   );
 };
 
