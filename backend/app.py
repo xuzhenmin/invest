@@ -2843,7 +2843,6 @@ def get_stock_data_batch():
             return jsonify({'error': '请提供symbols参数，如600519.SH,00700.HK'}), 400
         logger.info(f"[get_stock_data_batch] 批量查询快照 symbols={symbols}")
         result = batch_market_snapshot(symbols)
-        # logger.info(f"[get_stock_data_batch] batch_market_snapshot返回: {result}")
         data = {}
         for symbol in symbols:
             code_parts = symbol.split('.')
@@ -2854,8 +2853,6 @@ def get_stock_data_batch():
                 stock_data = result[symbol]
             elif norm_symbol in result:
                 stock_data = result[norm_symbol]
-            elif len(result) == 1:
-                stock_data = list(result.values())[0]
             if not stock_data:
                 data[symbol] = {'error': '未找到股票数据'}
                 continue
