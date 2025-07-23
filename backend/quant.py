@@ -13,6 +13,9 @@ import os
 from collections import defaultdict
 import tempfile
 
+print(f"[DEBUG] quant.py loaded from: {__file__}")
+print(f"[DEBUG] pd id at top: {id(pd)}")
+
 def get_stock_list(market):
     """
     根据市场代码返回股票列表。
@@ -683,16 +686,21 @@ def batch_market_snapshot(symbols, quote_ctx=None):
     返回: dict { 'HK.00700': 行情dict, ... }
     """
     results = {}
-    if quote_ctx is not None:
-        # 复用外部传入的连接
-        norm_syms = []
-        for s in symbols:
-            if '.' in s:
-                code, market = s.split('.')
-                market = market.upper()
-                norm_syms.append(f"{market}.{code.zfill(5) if market=='HK' and code.isdigit() else code}")
+    def normalize_symbol(s):
+        if '.' in s:
+            code, market = s.split('.')
+            market = market.upper()
+            if market == 'HK' and code.isdigit():
+                return f"{market}.{code.zfill(5)}"
+            elif market == 'US':
+                # 美股统一为US.BABA格式
+                return f"US.{code.upper()}"
             else:
-                norm_syms.append(s)
+                return f"{market}.{code}"
+        else:
+            return s
+    if quote_ctx is not None:
+        norm_syms = [normalize_symbol(s) for s in symbols]
         market_groups = {}
         for s in norm_syms:
             parts = s.split('.')
@@ -703,21 +711,18 @@ def batch_market_snapshot(symbols, quote_ctx=None):
         for market, syms in market_groups.items():
             for i in range(0, len(syms), 20):
                 batch = syms[i:i+20]
+                if market == 'US':
+                    print(f"[FUTU美股快照] 查询入参: {batch}")
                 ret, data = quote_ctx.get_market_snapshot(batch)
+                if market == 'US':
+                    print(f"[FUTU美股快照] 返回ret: {ret}, data: {data if isinstance(data, str) else data.to_dict() if hasattr(data, 'to_dict') else data}")
                 if ret == RET_OK and data is not None and not data.empty:
                     for idx, row in data.iterrows():
                         results[row['code']] = row.to_dict()
         return results
     # 否则每次新建并自动关闭
     with OpenQuoteContext(host='127.0.0.1', port=11111) as ctx:
-        norm_syms = []
-        for s in symbols:
-            if '.' in s:
-                code, market = s.split('.')
-                market = market.upper()
-                norm_syms.append(f"{market}.{code.zfill(5) if market=='HK' and code.isdigit() else code}")
-            else:
-                norm_syms.append(s)
+        norm_syms = [normalize_symbol(s) for s in symbols]
         market_groups = {}
         for s in norm_syms:
             parts = s.split('.')
@@ -728,7 +733,11 @@ def batch_market_snapshot(symbols, quote_ctx=None):
         for market, syms in market_groups.items():
             for i in range(0, len(syms), 20):
                 batch = syms[i:i+20]
+                if market == 'US':
+                    print(f"[FUTU美股快照] 查询入参: {batch}")
                 ret, data = ctx.get_market_snapshot(batch)
+                if market == 'US':
+                    print(f"[FUTU美股快照] 返回ret: {ret}, data: {data if isinstance(data, str) else data.to_dict() if hasattr(data, 'to_dict') else data}")
                 if ret == RET_OK and data is not None and not data.empty:
                     for idx, row in data.iterrows():
                         results[row['code']] = row.to_dict()
@@ -749,9 +758,7 @@ def analyze_multi_factor_entry_exit(symbol):
       - 收盘价连续2日低于10日均线
       - 成交量<20日均量且资金连续2日净流出
     """
-    import pandas as pd
     import numpy as np
-    import akshare as ak
     from datetime import datetime, timedelta
     result = {
         'is_entry': False,
@@ -1176,6 +1183,7 @@ def smart_watchlist_monitor(symbols):
     入参：symbols - 股票代码列表
     返回：[{stock, name, time, signal}]
     """
+    print(f"[DEBUG] pd id in smart_watchlist_monitor: {id(pd)}")
     import time as pytime
     from app import get_stock_data, get_capital_flow_data
     import json
@@ -1242,7 +1250,7 @@ def smart_watchlist_monitor(symbols):
                 elif symbol.endswith('.HK'):
                     from app import get_hk_minute_data, quote_ctx
                     minute_data = get_hk_minute_data(symbol, quote_ctx)
-                    import pandas as pd
+                    
                     if minute_data:
                         minute_df = pd.DataFrame(minute_data)
                 if (minute_df is None or minute_df.empty or len(minute_df) < 3):
@@ -1421,13 +1429,20 @@ def smart_watchlist_monitor(symbols):
                 return 2
             signals = sorted(signals, key=signal_priority)
             for sig in signals:
-                logger.info(f"[smart_watchlist_monitor][ANOMALY] symbol={symbol}, name={name}, time={now_time}, signal={sig['signal']}, signal_type={sig['signal_type']}, value={sig.get('value')}")
+                # 缩短主力资金大幅流入/流出为资金大幅流入/流出
+                short_signal_type = sig['signal_type']
+                short_signal = sig['signal']
+                if short_signal_type in ['主力资金大幅流入', '主力资金大幅流出']:
+                    short_signal_type = short_signal_type.replace('主力资金', '资金')
+                if isinstance(short_signal, str) and short_signal.startswith('主力资金大幅流'):
+                    short_signal = short_signal.replace('主力资金', '资金', 1)
+                logger.info(f"[smart_watchlist_monitor][ANOMALY] symbol={symbol}, name={name}, time={now_time}, signal={short_signal}, signal_type={short_signal_type}, value={sig.get('value')}")
                 results.append({
                     'stock': symbol,
                     'name': name,
                     'time': now_time,
-                    'signal': sig['signal'],
-                    'signal_type': sig['signal_type'],
+                    'signal': short_signal,
+                    'signal_type': short_signal_type,
                     'value': sig.get('value')
                 })
             # --- 新增：存储异动信号到文件 ---
