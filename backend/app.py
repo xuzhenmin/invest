@@ -19,7 +19,7 @@ import threading
 import time
 
 # 强制导入quant.py相关方法，确保batch_market_snapshot可用
-from quant import get_stock_list, get_stock_capital_flow, get_stock_financials, quant_get_stock_kline, get_stock_news, batch_market_snapshot, get_hk_minute_data, analyze_fundamental, load_latest_smart_monitor_signals, load_all_smart_monitor_signals
+from quant import get_stock_list, get_stock_capital_flow, get_stock_financials, quant_get_stock_kline, get_stock_news, batch_market_snapshot, get_hk_minute_data, analyze_fundamental, load_latest_smart_monitor_signals, load_all_smart_monitor_signals, get_order_book, get_rt_ticker
 
 try:
     from quant import get_stock_list, get_stock_capital_flow, get_stock_financials, quant_get_stock_kline, get_stock_news, batch_market_snapshot, get_hk_minute_data
@@ -31,6 +31,7 @@ except ImportError:
     get_stock_news = None
 
 from service.stock_service import get_stock_data as svc_get_stock_data
+from service.user_trade_service import user_trade_service
 
 # 配置日志
 logging.basicConfig(
@@ -3062,6 +3063,84 @@ def quant_capital_distribution_flask():
         import traceback
         print(traceback.format_exc())
         return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+@app.route('/api/stock/<symbol>/order_book', methods=['GET'])
+def get_order_book_api(symbol):
+    """
+    查询个股实时摆盘（Futu/OpenD接口）。
+    GET /api/stock/<symbol>/order_book?num=10
+    """
+    try:
+        num = int(request.args.get('num', 10))
+        data = get_order_book(symbol, num=num)
+        return jsonify({'code': 0, 'data': data})
+    except Exception as e:
+        return jsonify({'code': 1, 'error': str(e)})
+
+@app.route('/api/stock/<symbol>/rt_ticker', methods=['GET'])
+def get_rt_ticker_api(symbol):
+    """
+    查询个股实时逐笔（Futu/OpenD接口）。
+    GET /api/stock/<symbol>/rt_ticker?num=500
+    """
+    try:
+        num = int(request.args.get('num', 500))
+        data = get_rt_ticker(symbol, num=num)
+        # DataFrame 转 dict
+        if hasattr(data, 'to_dict'):
+            data = data.to_dict(orient='records')
+        return jsonify({'code': 0, 'data': data})
+    except Exception as e:
+        return jsonify({'code': 1, 'error': str(e)})
+
+@app.route('/api/trade/init', methods=['POST'])
+def api_trade_init():
+    data = request.json or {}
+    user_id = data.get('user_id')
+    force = data.get('force') == 666 or data.get('force') == '666'
+    if not user_id:
+        return jsonify({'success': False, 'msg': '缺少user_id'}), 400
+    result = user_trade_service.init_user_account(user_id, force_init=force)
+    return jsonify(result)
+
+@app.route('/api/trade/query', methods=['GET'])
+def api_trade_query():
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({'success': False, 'msg': '缺少user_id'}), 400
+    result = user_trade_service.query_account(user_id)
+    return jsonify(result)
+
+@app.route('/api/trade/order', methods=['POST'])
+def api_trade_order():
+    data = request.json or {}
+    user_id = data.get('user_id')
+    symbol = data.get('symbol')
+    price = data.get('price')
+    amount = data.get('amount')
+    side = data.get('side')
+    if not all([user_id, symbol, price, amount, side]):
+        return jsonify({'success': False, 'msg': '参数不全'}), 400
+    result = user_trade_service.order(user_id, symbol, price, amount, side)
+    return jsonify(result)
+
+@app.route('/api/trade/orders', methods=['GET'])
+def api_trade_orders():
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({'success': False, 'msg': '缺少user_id'}), 400
+    orders = user_trade_service.query_orders(user_id)
+    return jsonify({'success': True, 'orders': orders})
+
+@app.route('/api/trade/cancel', methods=['POST'])
+def api_trade_cancel():
+    data = request.json or {}
+    user_id = data.get('user_id')
+    order_id = data.get('order_id')
+    if not all([user_id, order_id]):
+        return jsonify({'success': False, 'msg': '参数不全'}), 400
+    result = user_trade_service.cancel_order(user_id, order_id)
+    return jsonify(result)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=True) 
