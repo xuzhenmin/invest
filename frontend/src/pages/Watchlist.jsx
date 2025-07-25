@@ -1,11 +1,12 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Row, Col, Form, Input, Button, Select, Table, Tag, message, Divider, Typography, Card, Modal, Tooltip, Collapse, Spin, Drawer, Tabs } from 'antd';
-import { UserOutlined, FundOutlined, BellOutlined, SettingOutlined, StockOutlined, CheckCircleTwoTone, ThunderboltOutlined, DownOutlined, UpOutlined, PieChartOutlined, ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons';
+import { UserOutlined, FundOutlined, BellOutlined, SettingOutlined, StockOutlined, CheckCircleTwoTone, ThunderboltOutlined, DownOutlined, UpOutlined, PieChartOutlined, ArrowUpOutlined, ArrowDownOutlined, EyeOutlined, EyeInvisibleOutlined, DollarCircleFilled, UserAddOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import TradingViewKLineChart from '../components/TradingViewKLineChart';
 import FundamentalAnalysisResult from '../components/FundamentalAnalysisResult';
 import ReactMarkdown from 'react-markdown';
 import CapitalDistributionPie from '../components/CapitalDistributionPie';
+import { InputNumber } from 'antd';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001';
 
@@ -33,7 +34,7 @@ const ruleOptions = [
 
 export default function Watchlist() {
   // 受控表单状态
-  const [userId, setUserId] = useState('');
+  const [userId, setUserId] = useState(''); // 默认为空，不从localStorage读取
   const [stocks, setStocks] = useState('');
   const [frequency, setFrequency] = useState(undefined);
   const [rules, setRules] = useState([]);
@@ -107,6 +108,28 @@ export default function Watchlist() {
   const [pageAuth, setPageAuth] = useState(false);
   const [pageAuthInput, setPageAuthInput] = useState('');
   const [pageAuthError, setPageAuthError] = useState('');
+  // Watchlist 组件 state 区域添加
+  const [showBlinkDot, setShowBlinkDot] = useState(true);
+  // 1. 新增state
+  const [orderBookModal, setOrderBookModal] = useState({ visible: false, symbol: '', name: '' });
+  const [orderBookData, setOrderBookData] = useState(null);
+  const [rtTickerData, setRtTickerData] = useState(null);
+  const [orderBookLoading, setOrderBookLoading] = useState(false);
+  const [rtTickerLoading, setRtTickerLoading] = useState(false);
+  // 1. 新增ref保存上一次orderBook/rtTicker数据
+  const prevOrderBookRef = useRef(null);
+  const prevRtTickerRef = useRef(null);
+  const [hoveredTradeSignal, setHoveredTradeSignal] = useState(null); // 新增：记录当前hover的信号行
+  const [tradeModal, setTradeModal] = useState({ visible: false, stock: null, signal: null });
+  const [tradeType, setTradeType] = useState('buy');
+  const [tradePrice, setTradePrice] = useState('');
+  const [tradeAmount, setTradeAmount] = useState(100);
+  const [hasAccount, setHasAccount] = useState(null); // null=未知, false=未创建, true=已创建
+  const [createAccountModal, setCreateAccountModal] = useState(false);
+  const [accountInfo, setAccountInfo] = useState({});
+  const [showAccountPopover, setShowAccountPopover] = useState(false);
+
+  // 页面加载时不自动查询账户信息，不读取localStorage
 
   // 拉取行情快照、K线和分时
   const fetchStockDetail = (code) => {
@@ -137,98 +160,56 @@ export default function Watchlist() {
   // 获取监控股票快照（首次和stocks变化时）
   useEffect(() => {
     const stockArr = stocks.split(/[ ,，]+/).filter(Boolean);
-    if (!stockArr.length) {
+    // 默认合并关键指数
+    const indexCodes = ['000001.SH','399001.SZ','800000.HK','800700.HK'];
+    const allSymbols = Array.from(new Set([...stockArr, ...indexCodes]));
+    if (!allSymbols.length) {
       setStockSnapshots({});
       prevChgRef.current = {};
       return;
     }
-    setSnapLoading(true);
-    // 批量分组，每组15只
-    const batchSize = 15;
-    const batches = [];
-    for (let i = 0; i < stockArr.length; i += batchSize) {
-      batches.push(stockArr.slice(i, i + batchSize));
-    }
-    Promise.all(
-      batches.map(batch =>
-        axios
-          .get(`${API_BASE_URL}/api/stock/batch`, { params: { symbols: batch.join(',') } })
-          .then(res => res.data)
-          .catch(() => ({}))
-      )
-    ).then(results => {
-      const snapMap = {};
-      const chgMap = {};
-      results.forEach(batchResult => {
-        Object.entries(batchResult).forEach(([code, data]) => {
-          snapMap[code] = data;
-          if (data && data.current_price !== undefined && data.pre_close !== undefined && data.pre_close !== 0) {
-            chgMap[code] = (data.current_price - data.pre_close).toFixed(2);
-          } else {
-            chgMap[code] = null;
-          }
-        });
-      });
-      setStockSnapshots(snapMap);
-      prevChgRef.current = chgMap;
-      setSnapLoading(false);
-    });
-  }, [stocks]);
-
-  // 定时刷新行情，5秒一次，仅更新涨跌额有变化的股票，变化的行闪烁
-  useEffect(() => {
-    if (!stocks) return;
-    const stockArr = stocks.split(/[ ,，]+/).filter(Boolean);
-    if (!stockArr.length) return;
-    const batchSize = 15;
-    const batches = [];
-    for (let i = 0; i < stockArr.length; i += batchSize) {
-      batches.push(stockArr.slice(i, i + batchSize));
-    }
-    const timer = setInterval(() => {
-      Promise.all(
-        batches.map(batch =>
-          axios
-            .get(`${API_BASE_URL}/api/stock/batch`, { params: { symbols: batch.join(',') } })
-            .then(res => res.data)
-            .catch(() => ({}))
-        )
-      ).then(results => {
-        setStockSnapshots(prev => {
-          const next = { ...prev };
-          const newFlashRows = {};
-          results.forEach(batchResult => {
-            Object.entries(batchResult).forEach(([code, data]) => {
+    let timer = null;
+    const fetchAll = () => {
+      axios
+        .get(`${API_BASE_URL}/api/stock/batch`, { params: { symbols: allSymbols.join(',') } })
+        .then(res => {
+          const snapMap = res.data || {};
+          setStockSnapshots(prev => {
+            const next = { ...snapMap };
+            const newFlashRows = {};
+            Object.entries(snapMap).forEach(([code, data]) => {
               if (!data || data.current_price === undefined || data.pre_close === undefined || data.pre_close === 0) return;
-              const newChg = (data.current_price - data.pre_close).toFixed(2);
-              const prevChg = prevChgRef.current[code];
-              if (prevChg === undefined || prevChg === null) {
-                // 首次或无前值，直接更新
-                next[code] = data;
-                prevChgRef.current[code] = newChg;
-              } else if (newChg !== prevChg) {
-                // 涨跌额有变化，更新并闪烁
-                next[code] = data;
-                prevChgRef.current[code] = newChg;
+              const newPrice = Number(data.current_price);
+              const newPreClose = Number(data.pre_close);
+              const prevData = prev[code];
+              const prevPrice = prevData && prevData.current_price !== undefined ? Number(prevData.current_price) : null;
+              const prevPreClose = prevData && prevData.pre_close !== undefined ? Number(prevData.pre_close) : null;
+              // 只要current_price或pre_close有变化就闪烁
+              const priceChanged = prevPrice !== null && Math.abs(newPrice - prevPrice) > 1e-6;
+              const preCloseChanged = prevPreClose !== null && Math.abs(newPreClose - prevPreClose) > 1e-6;
+              if (priceChanged || preCloseChanged) {
                 newFlashRows[code] = true;
               }
             });
+            setFlashRows(newFlashRows);
+            if (Object.keys(newFlashRows).length > 0) {
+              setTimeout(() => {
+                setFlashRows(f => {
+                  const cleared = { ...f };
+                  Object.keys(newFlashRows).forEach(code => { delete cleared[code]; });
+                  return cleared;
+                });
+              }, 500);
+            }
+            return next;
           });
-          setFlashRows(newFlashRows);
-          // 500ms后移除闪烁
-          if (Object.keys(newFlashRows).length > 0) {
-            setTimeout(() => {
-              setFlashRows(f => {
-                const cleared = { ...f };
-                Object.keys(newFlashRows).forEach(code => { delete cleared[code]; });
-                return cleared;
-              });
-            }, 500);
-          }
-          return next;
+        })
+        .catch(() => {
+          setStockSnapshots({});
         });
-      });
-    }, 5000);
+    };
+    fetchAll();
+    timer = setInterval(fetchAll, 5000);
     return () => clearInterval(timer);
   }, [stocks]);
 
@@ -293,6 +274,7 @@ export default function Watchlist() {
       return;
     }
     try {
+      // 查询监控配置
       const res = await axios.get(`${API_BASE_URL}/watchlist/query/monitor?userId=${userId}`);
       const data = res.data || {};
       setStocks(Array.isArray(data.stocks) ? data.stocks.join(',') : (data.stocks || ''));
@@ -306,6 +288,15 @@ export default function Watchlist() {
       setRules([]);
       setAlerts([]);
       message.error('未查到该用户配置');
+    }
+    // 新增：查询账户信息
+    try {
+      const accRes = await axios.get(`${API_BASE_URL}/api/trade/query`, { params: { user_id: userId } });
+      setHasAccount(accRes.data && accRes.data.success);
+      setAccountInfo(accRes.data && accRes.data.success ? accRes.data : null);
+    } catch (e) {
+      setHasAccount(false);
+      setAccountInfo(null);
     }
   };
 
@@ -660,6 +651,108 @@ export default function Watchlist() {
     }
   }
 
+  // 1. 新增定时刷新 useEffect（优化：定时刷新不再设置loading）
+  useEffect(() => {
+    let timer = null;
+    if (orderBookModal.visible && orderBookModal.symbol) {
+      // 首次打开时显示loading
+      setOrderBookLoading(true);
+      setRtTickerLoading(true);
+      const fetchData = (showLoading = false) => {
+        if (showLoading) setOrderBookLoading(true);
+        axios.get(`${API_BASE_URL}/api/stock/${orderBookModal.symbol}/order_book?num=10`)
+          .then(res => setOrderBookData(res.data.data))
+          .catch(() => setOrderBookData({ error: '获取摆盘失败' }))
+          .finally(() => { if (showLoading) setOrderBookLoading(false); });
+        if (showLoading) setRtTickerLoading(true);
+        axios.get(`${API_BASE_URL}/api/stock/${orderBookModal.symbol}/rt_ticker?num=20`)
+          .then(res => setRtTickerData(res.data.data))
+          .catch(() => setRtTickerData({ error: '获取逐笔失败' }))
+          .finally(() => { if (showLoading) setRtTickerLoading(false); });
+      };
+      fetchData(true); // 首次显示loading
+      timer = setInterval(() => fetchData(false), 5000); // 后续只更新数据
+    }
+    return () => { if (timer) clearInterval(timer); };
+  }, [orderBookModal.visible, orderBookModal.symbol]);
+
+  // 2. 摆盘表格渲染，买一/卖一高亮，价格变动高亮
+  useEffect(() => { if (orderBookData) prevOrderBookRef.current = orderBookData; }, [orderBookData]);
+  useEffect(() => { if (rtTickerData) prevRtTickerRef.current = rtTickerData; }, [rtTickerData]);
+
+  // 创建账户后刷新账户信息
+  const handleCreateAccount = () => {
+    if (!userId) {
+      message.error('请先输入用户ID');
+      setCreateAccountModal(false);
+      return;
+    }
+    axios.post(`${API_BASE_URL}/api/trade/init`, { user_id: userId })
+      .then(res => {
+        if (res.data && res.data.success) {
+          message.success('账户创建成功');
+          setHasAccount(true);
+          setAccountInfo(res.data.account);
+        } else {
+          message.error(res.data && res.data.msg || '创建失败');
+        }
+      })
+      .catch(() => message.error('创建失败'))
+      .finally(() => setCreateAccountModal(false));
+  };
+
+  // 在tradeModal弹窗中，买入/卖出按钮点击时调用下单接口
+  const handleSimTrade = (side) => {
+    if (!userId) {
+      message.error('请先输入用户ID');
+      return;
+    }
+    if (!tradeModal.stock || !tradeModal.signal) {
+      message.error('未选中股票');
+      return;
+    }
+    // 新增：数量必须为100的倍数
+    if (tradeAmount % 100 !== 0) {
+      message.error('买入/卖出数量必须为100的整数倍');
+      return;
+    }
+    axios.post(`${API_BASE_URL}/api/trade/order`, {
+      user_id: userId,
+      symbol: tradeModal.stock.symbol,
+      price: tradePrice,
+      amount: tradeAmount,
+      side,
+    }).then(res => {
+      if (res.data && res.data.success) {
+        message.success(res.data.msg || '下单成功');
+        setTradeModal({ visible: false, stock: null, signal: null });
+        // 刷新账户信息
+        axios.get(`${API_BASE_URL}/api/trade/query`, { params: { user_id: userId } })
+          .then(r2 => setAccountInfo(r2.data && r2.data.account ? r2.data.account : null));
+      } else {
+        message.error(res.data && res.data.msg || '下单失败');
+      }
+    }).catch(() => message.error('下单失败'));
+  };
+
+  // 定时刷新账户信息（每10秒）
+  useEffect(() => {
+    if (!userId) return;
+    const fetchAccount = async () => {
+      try {
+        const accRes = await axios.get(`${API_BASE_URL}/api/trade/query`, { params: { user_id: userId } });
+        setHasAccount(accRes.data && accRes.data.success);
+        setAccountInfo(accRes.data && accRes.data.success ? accRes.data : null);
+      } catch (e) {
+        setHasAccount(false);
+        setAccountInfo(null);
+      }
+    };
+    fetchAccount();
+    const timer = setInterval(fetchAccount, 10000);
+    return () => clearInterval(timer);
+  }, [userId]);
+
   return (
     <>
       {/* 页面级授权浮层 */}
@@ -687,7 +780,7 @@ export default function Watchlist() {
             flexDirection: 'column',
             alignItems: 'center',
           }}>
-            {/* 去掉“访问授权”标题，仅保留输入框和按钮 */}
+            {/* 去掉"访问授权"标题，仅保留输入框和按钮 */}
             <input
               type="password"
               value={pageAuthInput}
@@ -827,7 +920,7 @@ export default function Watchlist() {
             width={400}
             onClose={() => setShowStockDetail(false)}
             open={showStockDetail}
-            bodyStyle={{ padding: 0, background: '#181c24' }}
+            styles={{ body: { padding: 0, background: '#181c24' } }}
             getContainer={() => document.body}
             zIndex={2000}
           >
@@ -1048,7 +1141,7 @@ export default function Watchlist() {
               </div>
               {fundamentalData && !fundamentalLoading && (
                 fundamentalData.error ? (
-                  <Card style={{ background: '#232a36', borderRadius: 10, color: '#ff4d4f', fontWeight: 600, marginTop: 0, boxShadow: '0 2px 8px #0003', border: 'none', padding: 0 }} bodyStyle={{ padding: 16 }}>
+                  <Card style={{ background: '#232a36', borderRadius: 10, boxShadow: '0 2px 8px #0003', border: 'none', padding: 0 }} styles={{ body: { padding: 16 } }}>
                     {fundamentalData.error}
                   </Card>
                 ) : (
@@ -1125,7 +1218,7 @@ export default function Watchlist() {
               </Modal>
               {showTabsCard && (
                 <div style={{ marginTop: 12, marginBottom: 8 }}>
-                  <Card style={{ background: '#232a36', borderRadius: 10, boxShadow: '0 2px 8px #0003', border: 'none', padding: 0 }} bodyStyle={{ padding: 8 }}>
+                  <Card style={{ background: '#232a36', borderRadius: 10, boxShadow: '0 2px 8px #0003', border: 'none', padding: 0 }} styles={{ body: { padding: 8 } }}>
                     <div style={{ color: '#faad14', fontWeight: 700, fontSize: 15, marginBottom: 4, display: 'flex', alignItems: 'center' }}>
                       <PieChartOutlined style={{ color: '#faad14', marginRight: 6, fontSize: 18 }} />资金分布
                     </div>
@@ -1229,7 +1322,7 @@ export default function Watchlist() {
                 </Collapse.Panel>
               </Collapse>
               {/* 监控股票列表展示 */}
-              <Card style={{ background: '#232a36', borderRadius: 10, marginTop: 8, marginBottom: 8, boxShadow: '0 2px 8px #0003', border: 'none', padding: 0 }} bodyStyle={{ padding: 10 }}>
+              <Card style={{ background: '#232a36', borderRadius: 10, marginTop: 8, marginBottom: 8, boxShadow: '0 2px 8px #0003', border: 'none', padding: 0 }} styles={{ body: { padding: 10 } }}>
                 <div style={{ color: '#faad14', fontWeight: 700, fontSize: 15, marginBottom: 6 }}>
                   <StockOutlined style={{ marginRight: 6 }} />监控股票列表
                 </div>
@@ -1318,9 +1411,44 @@ export default function Watchlist() {
                   })}
                 </div>
               </Card>
+              {/* 市场行情卡片 */}
+              <Card style={{ background: '#232a36', borderRadius: 10, marginTop: 0, marginBottom: 8, boxShadow: '0 2px 8px #0003', border: 'none', padding: 0 }} styles={{ body: { padding: 10 } }}>
+                <div style={{ color: '#faad14', fontWeight: 700, fontSize: 15, marginBottom: 6, display: 'flex', alignItems: 'center' }}>
+                  <StockOutlined style={{ marginRight: 6 }} />市场行情
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {[
+                    { code: '000001.SH', name: '上证指数' },
+                    { code: '399001.SZ', name: '深成指数' },
+                    { code: '800000.HK', name: '恒生综合' },
+                    { code: '800700.HK', name: '恒生科技' },
+                  ].map(idx => {
+                    const snap = stockSnapshots[idx.code];
+                    const price = snap && snap.current_price !== undefined ? Number(snap.current_price) : null;
+                    const preClose = snap && snap.pre_close !== undefined ? Number(snap.pre_close) : null;
+                    let pct = null;
+                    if (snap && price !== null && preClose !== null && preClose !== 0) {
+                      pct = ((price - preClose) / preClose) * 100;
+                    }
+                    const up = pct !== null && pct > 0;
+                    const down = pct !== null && pct < 0;
+                    const color = up ? '#ff4d4f' : down ? '#52c41a' : '#b0bec5';
+                    // 更新特效
+                    const priceChanged = false; // 可根据需要加高亮
+                    const flashClass = priceChanged ? (up ? 'flash-up' : down ? 'flash-down' : '') : '';
+                    return (
+                      <div key={idx.code} className={flashClass} style={{ flex: '1 1 120px', minWidth: 110, maxWidth: 160, background: '#181c24', borderRadius: 7, padding: '8px 10px', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', boxShadow: '0 1px 4px #0002', border: '1px solid #232a36', transition: 'background 0.3s' }}>
+                        <span style={{ color: '#b0bec5', fontWeight: 600, fontSize: 12, marginBottom: 2 }}>{idx.name}</span>
+                        <span style={{ color, fontWeight: 700, fontSize: 16 }}>{price !== null ? price.toFixed(2) : '--'}</span>
+                        <span style={{ color, fontWeight: 600, fontSize: 12 }}>{pct !== null ? (pct > 0 ? '+' : '') + pct.toFixed(2) + '%' : '--'}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </Card>
             </Col>
             <Col span={18} style={{ padding: 18 }}>
-              <Card style={{ background: 'rgba(30,34,44,0.98)', borderRadius: 10, boxShadow: '0 2px 8px #0003', border: 'none' }} bodyStyle={{ padding: 16 }}>
+              <Card style={{ background: 'rgba(30,34,44,0.98)', borderRadius: 10, boxShadow: '0 2px 8px #0003', border: 'none' }} styles={{ body: { padding: 16 } }}>
                 <div
                   style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 0, cursor: 'pointer', userSelect: 'none' }}
                   onClick={() => setAlertCardCollapsed(v => !v)}
@@ -1403,13 +1531,133 @@ export default function Watchlist() {
                 </>}
               </Card>
               {/* 智能盯盘模块 - 高端紧凑卡片实现（主内容区） */}
-              <Card style={{ background: 'rgba(30,34,44,0.98)', borderRadius: 10, boxShadow: '0 2px 8px #0003', border: 'none', marginTop: 18 }} bodyStyle={{ padding: 16 }}>
+              <Card style={{ background: 'rgba(30,34,44,0.98)', borderRadius: 10, boxShadow: '0 2px 8px #0003', border: 'none', marginTop: 18 }} styles={{ body: { padding: 16 } }}>
                 <div
-                  style={{ color: '#13c2c2', fontWeight: 700, fontSize: 17, display: 'flex', alignItems: 'center', marginBottom: 8, cursor: 'pointer', userSelect: 'none' }}
+                  style={{ color: '#13c2c2', fontWeight: 700, fontSize: 17, display: 'flex', alignItems: 'center', marginBottom: 8, cursor: 'pointer', userSelect: 'none', justifyContent: 'space-between' }}
                   onClick={() => setSmartMonitorCollapsed(v => !v)}
                 >
-                  <ThunderboltOutlined style={{ color: '#13c2c2', marginRight: 8 }} />智能盯盘
-                  <span style={{ marginLeft: 8, fontSize: 16 }}>{smartMonitorCollapsed ? <DownOutlined /> : <UpOutlined />}</span>
+                  <span style={{ display: 'flex', alignItems: 'center' }}>
+                    <ThunderboltOutlined style={{ color: '#13c2c2', marginRight: 8 }} />智能盯盘
+                    <span style={{ marginLeft: 8, fontSize: 16 }}>{smartMonitorCollapsed ? <DownOutlined /> : <UpOutlined />}</span>
+                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center' }}>
+                    {/* 创建账户图标，仅未创建时显示 */}
+                    {hasAccount === false && (
+                      <Tooltip title="创建模拟账户">
+                        <UserAddOutlined
+                          style={{ color: '#40a9ff', fontSize: 22, marginRight: 16, cursor: 'pointer' }}
+                          onClick={e => { e.stopPropagation(); setCreateAccountModal(true); }}
+                        />
+                      </Tooltip>
+                    )}
+                    {/* 账户信息展示 */}
+                    {hasAccount && accountInfo && accountInfo.account && accountInfo.success !== false && (
+                      <div
+                        style={{
+                          marginRight: 12,
+                          display: 'flex',
+                          alignItems: 'center',
+                          background: '#181c24',
+                          borderRadius: 8,
+                          padding: '2px 12px',
+                          color: '#faad14',
+                          fontWeight: 700,
+                          fontSize: 14,
+                          cursor: 'pointer',
+                          boxShadow: '0 2px 8px #0003',
+                          border: '1px solid #232a36',
+                          position: 'relative',
+                          transition: 'background 0.2s',
+                        }}
+                        onMouseEnter={() => setShowAccountPopover(true)}
+                        onMouseLeave={() => setShowAccountPopover(false)}
+                      >
+                        <UserOutlined style={{ color: '#40a9ff', marginRight: 6, fontSize: 18 }} />
+                        <span style={{ marginRight: 8 }}>资金: {accountInfo.account?.cash?.toLocaleString(undefined, { maximumFractionDigits: 2 })} 元</span>
+                        <span style={{ color: '#b0bec5', fontWeight: 500, fontSize: 13 }}>持仓: {Object.keys(accountInfo.account?.positions || {}).length}只</span>
+                        {/* 账户详细信息卡片 */}
+                        {showAccountPopover && (
+                          <div style={{
+                            position: 'absolute',
+                            top: '110%',
+                            right: 0,
+                            minWidth: 320,
+                            background: '#232a36',
+                            color: '#fff',
+                            borderRadius: 10,
+                            boxShadow: '0 4px 24px #0008',
+                            border: '1.5px solid #313a4d',
+                            zIndex: 100,
+                            padding: 20,
+                            fontSize: 13
+                          }}>
+                            <div style={{ color: '#faad14', fontWeight: 700, fontSize: 16, marginBottom: 10 }}>账户信息</div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                              <span style={{ color: '#b0bec5' }}>初始资金</span>
+                              <span style={{ color: '#fff', fontWeight: 600 }}>{accountInfo.initial_cash?.toLocaleString(undefined, { maximumFractionDigits: 2 })} 元</span>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                              <span style={{ color: '#b0bec5' }}>现金余额</span>
+                              <span style={{ color: '#fff', fontWeight: 600 }}>{accountInfo.account?.cash?.toLocaleString(undefined, { maximumFractionDigits: 2 })} 元</span>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                              <span style={{ color: '#b0bec5' }}>总资产</span>
+                              <span style={{ color: '#fff', fontWeight: 600 }}>{accountInfo.total_asset?.toLocaleString(undefined, { maximumFractionDigits: 2 })} 元</span>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
+                              <span style={{ color: '#b0bec5' }}>总盈亏</span>
+                              <span style={{ color: accountInfo.total_pnl > 0 ? '#ff4d4f' : accountInfo.total_pnl < 0 ? '#52c41a' : '#fff', fontWeight: 700 }}>
+                                {accountInfo.total_pnl > 0 ? '+' : ''}{accountInfo.total_pnl?.toFixed(2)} 元
+                                <span style={{ marginLeft: 8, fontWeight: 500, fontSize: 12, color: accountInfo.total_pnl > 0 ? '#ff7875' : accountInfo.total_pnl < 0 ? '#95de64' : '#b0bec5' }}>
+                                  ({accountInfo.total_pnl_ratio > 0 ? '+' : ''}{(accountInfo.total_pnl_ratio * 100).toFixed(2)}%)
+                                </span>
+                              </span>
+                            </div>
+                            <div style={{ borderTop: '1px solid #313a4d', margin: '12px 0 10px 0' }} />
+                            <div style={{ color: '#faad14', fontWeight: 600, fontSize: 14, marginBottom: 8 }}>持仓明细</div>
+                            <div style={{ maxHeight: 180, overflowY: 'auto' }}>
+                              <table style={{ width: '100%', borderCollapse: 'collapse', background: 'none', fontSize: 12 }}>
+                                <thead>
+                                  <tr style={{ color: '#b0bec5', borderBottom: '1px solid #313a4d' }}>
+                                    <th style={{ textAlign: 'left', fontWeight: 500, padding: '2px 0' }}>名称/代码</th>
+                                    <th style={{ textAlign: 'right', fontWeight: 500, padding: '2px 0' }}>数量</th>
+                                    <th style={{ textAlign: 'right', fontWeight: 500, padding: '2px 0' }}>成本</th>
+                                    <th style={{ textAlign: 'right', fontWeight: 500, padding: '2px 0' }}>盈亏</th>
+                                    <th style={{ textAlign: 'right', fontWeight: 500, padding: '2px 0' }}>盈亏率</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {Object.entries(accountInfo.account?.positions || {}).map(([code, pos]) => {
+                                    const name = stockSnapshots[code]?.name || code;
+                                    const amount = pos.amount;
+                                    const cost = pos.cost;
+                                    const pnl = accountInfo.positions_pnl?.[code] ?? null;
+                                    const pnlRatio = accountInfo.positions_pnl_ratio?.[code] ?? null;
+                                    return (
+                                      <tr key={code} style={{ borderBottom: '1px solid #232a36' }}>
+                                        <td style={{ color: '#40a9ff', fontWeight: 600, padding: '2px 0' }}>{name}<br /><span style={{ color: '#b0bec5', fontSize: 11 }}>{code}</span></td>
+                                        <td style={{ textAlign: 'right', color: '#fff', padding: '2px 0' }}>{amount}</td>
+                                        <td style={{ textAlign: 'right', color: '#fff', padding: '2px 0' }}>{cost?.toFixed(2)}</td>
+                                        <td style={{ textAlign: 'right', fontWeight: 700, color: pnl > 0 ? '#ff4d4f' : pnl < 0 ? '#52c41a' : '#fff', padding: '2px 0' }}>{pnl > 0 ? '+' : ''}{pnl?.toFixed(2)}</td>
+                                        <td style={{ textAlign: 'right', fontWeight: 600, color: pnlRatio > 0 ? '#ff7875' : pnlRatio < 0 ? '#95de64' : '#b0bec5', padding: '2px 0' }}>{pnlRatio !== null && pnlRatio !== undefined ? ((pnlRatio > 0 ? '+' : '') + (pnlRatio * 100).toFixed(2) + '%') : '-'}</td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    <span
+                      style={{ marginLeft: 12, cursor: 'pointer', color: '#faad14', fontSize: 20, display: 'flex', alignItems: 'center' }}
+                      title={showBlinkDot ? '隐藏特效' : '显示特效'}
+                      onClick={e => { e.stopPropagation(); setShowBlinkDot(v => !v); }}
+                    >
+                      {showBlinkDot ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                    </span>
+                  </div>
                 </div>
                 {!smartMonitorCollapsed && (
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 12px', background: 'none', padding: 0 }}>
@@ -1456,7 +1704,28 @@ export default function Watchlist() {
                             {stock.name ? (
                               <>
                                 <span style={{ color: '#5cc6ff', fontWeight: 800, fontSize: 16, marginRight: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 110, letterSpacing: 0.5 }}>{stock.name}</span>
-                                <span style={{ color: '#b0bec5', fontWeight: 600, fontSize: 12, marginRight: 4, whiteSpace: 'nowrap', opacity: 0.85 }}>{stock.symbol}</span>
+                                <span
+                                  style={{ color: '#b0bec5', fontWeight: 600, fontSize: 12, marginRight: 4, whiteSpace: 'nowrap', opacity: 0.85, cursor: 'pointer', textDecoration: 'underline dotted' }}
+                                  title="点击查看实时摆盘/逐笔"
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    setOrderBookModal({ visible: true, symbol: stock.symbol, name: stock.name });
+                                    setOrderBookData(null);
+                                    setRtTickerData(null);
+                                    setOrderBookLoading(true);
+                                    setRtTickerLoading(true);
+                                    axios.get(`${API_BASE_URL}/api/stock/${stock.symbol}/order_book?num=10`)
+                                      .then(res => setOrderBookData(res.data.data))
+                                      .catch(() => setOrderBookData({ error: '获取摆盘失败' }))
+                                      .finally(() => setOrderBookLoading(false));
+                                    axios.get(`${API_BASE_URL}/api/stock/${stock.symbol}/rt_ticker?num=20`)
+                                      .then(res => setRtTickerData(res.data.data))
+                                      .catch(() => setRtTickerData({ error: '获取逐笔失败' }))
+                                      .finally(() => setRtTickerLoading(false));
+                                  }}
+                                >
+                                  {stock.symbol}
+                                </span>
                                 {/* 新增：异动箭头图标 */}
                                 {hasRecentUp && <ArrowUpOutlined style={{ color: '#ff4d4f', fontSize: 18, marginLeft: 2, verticalAlign: 'middle' }} />}
                                 {hasRecentDown && <ArrowDownOutlined style={{ color: '#52c41a', fontSize: 18, marginLeft: 2, verticalAlign: 'middle' }} />}
@@ -1464,7 +1733,7 @@ export default function Watchlist() {
                             ) : (
                               <span style={{ color: '#5cc6ff', fontWeight: 800, fontSize: 16, marginRight: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 110 }}>{stock.symbol}</span>
                             )}
-                            {shouldShowDot && (
+                            {showBlinkDot && shouldShowDot && (
                               <span style={{
                                 display: 'inline-block',
                                 width: 12,
@@ -1497,20 +1766,60 @@ export default function Watchlist() {
                             {showSignals.map((signal, idx) => {
                               const eventTime = signal.time ? new Date(signal.time) : null;
                               const isNew = eventTime && (now - eventTime) <= 15 * 60 * 1000;
+                              const isHovered = hoveredTradeSignal && hoveredTradeSignal.symbol === stock.symbol && hoveredTradeSignal.idx === idx;
                               return (
-                                <div key={signal.time + signal.content} style={{
-                                  display: 'flex', flexDirection: 'column', alignItems: 'flex-start',
-                                  background: isNew ? 'linear-gradient(90deg,rgba(36,60,100,0.10) 60%,rgba(36,44,66,0.08) 100%)' : 'transparent',
-                                  borderRadius: 7,
-                                  boxShadow: isNew ? '0 2px 8px #1890ff18' : '0 1px 4px #0001',
-                                  padding: '5px 10px',
-                                  margin: '0 8px',
-                                  border: isNew ? '1.5px solid rgba(64,169,255,0.18)' : '1px solid #232a36',
-                                  fontSize: 12,
-                                  transition: 'background 0.2s, border 0.2s',
-                                }}>
+                                <div
+                                  key={signal.time + signal.content}
+                                  onMouseEnter={() => setHoveredTradeSignal({ symbol: stock.symbol, idx })}
+                                  onMouseLeave={() => setHoveredTradeSignal(null)}
+                                  style={{
+                                    position: 'relative',
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    alignItems: 'flex-start',
+                                    background: isNew ? 'linear-gradient(90deg,rgba(36,60,100,0.10) 60%,rgba(36,44,66,0.08) 100%)' : 'transparent',
+                                    borderRadius: 7,
+                                    boxShadow: isNew ? '0 2px 8px #1890ff18' : '0 1px 4px #0001',
+                                    padding: '5px 10px',
+                                    margin: '0 8px',
+                                    border: isNew ? '1.5px solid rgba(64,169,255,0.18)' : '1px solid #232a36',
+                                    fontSize: 12,
+                                    transition: 'background 0.2s, border 0.2s',
+                                    minHeight: 32,
+                                    justifyContent: 'center',
+                                  }}
+                                >
                                   <span style={{ color: isNew ? '#8fd6ff' : '#b0bec5', fontSize: 10, minWidth: 60, marginBottom: 2, fontWeight: isNew ? 700 : 400 }}>{signal.time}</span>
-                                  {renderSignalContent(signal.content, isNew)}
+                                  <div style={{ display: 'flex', alignItems: 'center', width: '100%' }}>
+                                    {renderSignalContent(signal.content, isNew)}
+                                    {isHovered && hasAccount && accountInfo && accountInfo.account && accountInfo.success !== false && (
+                                      <span
+                                        style={{
+                                          position: 'absolute',
+                                          right: 12,
+                                          top: '50%',
+                                          transform: 'translateY(-50%)',
+                                          color: '#bfae7a',
+                                          textShadow: '0 0 4px #bfae7a',
+                                          fontSize: 22,
+                                          cursor: 'pointer',
+                                          zIndex: 2,
+                                          opacity: 1,
+                                          transition: 'opacity 0.18s',
+                                        }}
+                                        title="快捷交易"
+                                        onClick={e => {
+                                          e.stopPropagation();
+                                          setTradeModal({ visible: true, stock, signal });
+                                          setTradeType('buy');
+                                          setTradeAmount(100);
+                                          setTradePrice(stockSnapshots[stock.symbol]?.current_price || '');
+                                        }}
+                                      >
+                                        <DollarCircleFilled />
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
                               );
                             })}
@@ -1642,7 +1951,185 @@ export default function Watchlist() {
               50% { opacity: 0.2; }
               100% { opacity: 1; }
             }
+            .price-up-flash { animation: price-up-flash 0.6s; background: rgba(82,196,26,0.18)!important; }
+            .price-down-flash { animation: price-down-flash 0.6s; background: rgba(255,77,79,0.18)!important; }
+            @keyframes price-up-flash { 0% { background: #232a36; } 40% { background: rgba(82,196,26,0.18); } 100% { background: #232a36; } }
+            @keyframes price-down-flash { 0% { background: #232a36; } 40% { background: rgba(255,77,79,0.18); } 100% { background: #232a36; } }
+            .trade-input-white input {
+              color: #fff !important;
+              background: #181c24 !important;
+              caret-color: #faad14 !important;
+            }
+            .trade-input-white input::placeholder {
+              color: #b0bec5 !important;
+              opacity: 1 !important;
+            }
           `}</style>
+          {/* 3. 页面底部新增Modal浮层 */}
+          <Modal
+            open={orderBookModal.visible}
+            onCancel={() => setOrderBookModal({ visible: false, symbol: '', name: '' })}
+            footer={null}
+            width={800}
+            styles={{ body: { background: '#232a36', color: '#fff', borderRadius: 16, padding: 0, minHeight: 400 } }}
+            style={{ top: 80, borderRadius: 16 }}
+            title={
+              <span style={{ color: '#40a9ff', fontWeight: 700, fontSize: 18 }}>
+                {orderBookModal.name} <span style={{ color: '#b0bec5', fontSize: 15, marginLeft: 8 }}>{orderBookModal.symbol}</span>
+                <span style={{ color: '#faad14', fontSize: 15, marginLeft: 18 }}>实时摆盘 & 逐笔</span>
+              </span>
+            }
+          >
+            <div style={{ display: 'flex', gap: 24, padding: 24 }}>
+              {/* 摆盘 */}
+              <div style={{ flex: 1, minWidth: 320 }}>
+                <div style={{ color: '#faad14', fontWeight: 700, fontSize: 16, marginBottom: 8 }}>实时摆盘</div>
+                {orderBookLoading ? <Spin /> : orderBookData && !orderBookData.error ? (
+                  <table style={{ width: '100%', color: '#fff', fontSize: 13, borderCollapse: 'collapse', background: '#181c24', borderRadius: 8 }}>
+                    <thead>
+                      <tr>
+                        <th style={{ color: '#faad14', fontWeight: 700, padding: 4 }}>买价</th>
+                        <th style={{ color: '#faad14', fontWeight: 700, padding: 4 }}>买量</th>
+                        <th style={{ color: '#faad14', fontWeight: 700, padding: 4 }}>卖价</th>
+                        <th style={{ color: '#faad14', fontWeight: 700, padding: 4 }}>卖量</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(orderBookData.Bid || []).map((bid, i) => {
+                        const prevBid = prevOrderBookRef.current?.Bid?.[i];
+                        const prevAsk = prevOrderBookRef.current?.Ask?.[i];
+                        const priceUp = prevBid && bid[0] > prevBid[0];
+                        const priceDown = prevBid && bid[0] < prevBid[0];
+                        const askUp = prevAsk && orderBookData.Ask[i]?.[0] > prevAsk[0];
+                        const askDown = prevAsk && orderBookData.Ask[i]?.[0] < prevAsk[0];
+                        return (
+                          <tr key={i} style={{ background: i === 0 ? 'rgba(250,173,20,0.10)' : 'none' }}>
+                            <td className={priceUp ? 'price-up-flash' : priceDown ? 'price-down-flash' : ''} style={{ color: '#52c41a', fontWeight: 700 }}>{bid[0]}</td>
+                            <td style={{ color: '#52c41a' }}>{bid[1]}</td>
+                            <td className={askUp ? 'price-up-flash' : askDown ? 'price-down-flash' : ''} style={{ color: '#ff4d4f', fontWeight: 700 }}>{orderBookData.Ask[i]?.[0] ?? '-'}</td>
+                            <td style={{ color: '#ff4d4f' }}>{orderBookData.Ask[i]?.[1] ?? '-'}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                ) : <div style={{ color: '#ff4d4f' }}>{orderBookData?.error || '暂无数据'}</div>}
+              </div>
+              {/* 逐笔 */}
+              <div style={{ flex: 1, minWidth: 320 }}>
+                <div style={{ color: '#40a9ff', fontWeight: 700, fontSize: 16, marginBottom: 8 }}>实时逐笔</div>
+                {rtTickerLoading ? <Spin /> : Array.isArray(rtTickerData) && rtTickerData.length > 0 ? (
+                  <table style={{ width: '100%', color: '#fff', fontSize: 13, borderCollapse: 'collapse', background: '#181c24', borderRadius: 8 }}>
+                    <thead>
+                      <tr>
+                        <th style={{ color: '#faad14', fontWeight: 700, padding: 4 }}>时间</th>
+                        <th style={{ color: '#faad14', fontWeight: 700, padding: 4 }}>价格</th>
+                        <th style={{ color: '#faad14', fontWeight: 700, padding: 4 }}>数量</th>
+                        <th style={{ color: '#faad14', fontWeight: 700, padding: 4 }}>方向</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rtTickerData.slice().reverse().map((row, i, arr) => {
+                        const prevRow = prevRtTickerRef.current?.[arr.length - 1 - i];
+                        const priceUp = prevRow && row.price > prevRow.price;
+                        const priceDown = prevRow && row.price < prevRow.price;
+                        return (
+                          <tr key={i} style={{ background: i === 0 ? 'rgba(64,169,255,0.10)' : 'none' }}>
+                            <td style={{ color: '#b0bec5' }}>{row.time}</td>
+                            <td className={priceUp ? 'price-up-flash' : priceDown ? 'price-down-flash' : ''} style={{ color: row.ticker_direction === 'BUY' ? '#ff4d4f' : row.ticker_direction === 'SELL' ? '#52c41a' : '#fff', fontWeight: 700 }}>{row.price}</td>
+                            <td style={{ color: '#fff' }}>{row.volume}</td>
+                            <td style={{ color: row.ticker_direction === 'BUY' ? '#ff4d4f' : row.ticker_direction === 'SELL' ? '#52c41a' : '#b0bec5' }}>{row.ticker_direction}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                ) : <div style={{ color: '#ff4d4f' }}>{rtTickerData?.error || '暂无数据'}</div>}
+              </div>
+            </div>
+          </Modal>
+          <Modal
+            open={tradeModal.visible}
+            onCancel={() => setTradeModal({ visible: false, stock: null, signal: null })}
+            footer={null}
+            width={360}
+            styles={{ body: { background: '#232a36', color: '#fff', borderRadius: 10, padding: 0 } }}
+            title={null}
+            destroyOnClose
+          >
+            {tradeModal.stock && tradeModal.signal && (
+              <div style={{ padding: 18, background: '#232a36', borderRadius: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+                  <span style={{ color: '#faad14', fontWeight: 600, fontSize: 15, marginRight: 8 }}>{tradeModal.stock.name}</span>
+                  <span style={{ color: '#b0bec5', fontSize: 12, fontWeight: 500 }}>{tradeModal.stock.symbol}</span>
+                </div>
+                <div style={{ color: '#b0bec5', fontSize: 11, marginBottom: 8, background: '#181c24', borderRadius: 4, padding: '6px 10px', fontWeight: 500, border: '1px solid #232a36' }}>
+                  <ThunderboltOutlined style={{ color: '#faad14', marginRight: 4, fontSize: 13 }} />{tradeModal.signal.content}
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                  <Button
+                    type={tradeType === 'buy' ? 'primary' : 'default'}
+                    style={{ flex: 1, background: tradeType === 'buy' ? '#237a3b' : '#232a36', color: tradeType === 'buy' ? '#fff' : '#b0bec5', fontWeight: 600, fontSize: 13, borderRadius: 4, border: 'none', boxShadow: 'none', height: 32, padding: 0 }}
+                    onClick={() => setTradeType('buy')}
+                  >买入</Button>
+                  <Button
+                    type={tradeType === 'sell' ? 'primary' : 'default'}
+                    style={{ flex: 1, background: tradeType === 'sell' ? '#a03a3a' : '#232a36', color: tradeType === 'sell' ? '#fff' : '#b0bec5', fontWeight: 600, fontSize: 13, borderRadius: 4, border: 'none', boxShadow: 'none', height: 32, padding: 0 }}
+                    onClick={() => setTradeType('sell')}
+                  >卖出</Button>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
+                  <span style={{ color: '#b0bec5', fontSize: 12, width: 38 }}>价格</span>
+                  <InputNumber
+                    min={0}
+                    value={tradePrice}
+                    onChange={v => setTradePrice(v)}
+                    style={{ flex: 1, background: '#181c24', color: '#fff', border: '1px solid #313a4d', borderRadius: 4, fontWeight: 600, fontSize: 13, marginLeft: 6, height: 28, lineHeight: '28px', caretColor: '#faad14' }}
+                    stringMode
+                    size="small"
+                    placeholder="输入价格"
+                    className="trade-input-white"
+                  />
+                  <span style={{ color: '#b0bec5', fontSize: 11, marginLeft: 6 }}>元</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', marginBottom: 14 }}>
+                  <span style={{ color: '#b0bec5', fontSize: 12, width: 38 }}>数量</span>
+                  <InputNumber
+                    min={1}
+                    step={100}
+                    value={tradeAmount}
+                    onChange={v => setTradeAmount(v)}
+                    style={{ flex: 1, background: '#181c24', color: '#fff', border: '1px solid #313a4d', borderRadius: 4, fontWeight: 600, fontSize: 13, marginLeft: 6, height: 28, lineHeight: '28px', caretColor: '#faad14' }}
+                    size="small"
+                    placeholder="输入数量"
+                    className="trade-input-white"
+                  />
+                  <span style={{ color: '#b0bec5', fontSize: 11, marginLeft: 6 }}>股</span>
+                </div>
+                <Button
+                  type="primary"
+                  block
+                  style={{ background: tradeType === 'buy' ? '#237a3b' : '#a03a3a', border: 'none', fontWeight: 700, fontSize: 14, borderRadius: 5, height: 36, boxShadow: 'none', letterSpacing: 1 }}
+                  onClick={() => handleSimTrade(tradeType)}
+                >{tradeType === 'buy' ? '买入' : '卖出'}</Button>
+              </div>
+            )}
+          </Modal>
+          <Modal
+            open={createAccountModal}
+            onCancel={() => setCreateAccountModal(false)}
+            onOk={handleCreateAccount}
+            okText="创建"
+            cancelText="取消"
+            title="创建模拟账户"
+            styles={{ body: { padding: 24, background: '#232a36', color: '#fff', borderRadius: 12 }, mask: { background: 'rgba(24,28,36,0.92)' } }}
+            okButtonProps={{ style: { background: '#40a9ff', border: 'none', fontWeight: 700, fontSize: 15, borderRadius: 6 } }}
+            cancelButtonProps={{ style: { background: '#181c24', color: '#b0bec5', border: '1px solid #313a4d', fontWeight: 600, fontSize: 15, borderRadius: 6 } }}
+            centered
+          >
+            <div style={{ color: '#fff', fontSize: 16, fontWeight: 600, marginBottom: 8 }}>是否创建一个新的模拟账户？</div>
+            <div style={{ color: '#b0bec5', fontSize: 14 }}>创建后可进行模拟买卖、持仓管理等操作。</div>
+          </Modal>
         </>
       )}
     </>
