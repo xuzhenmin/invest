@@ -1305,18 +1305,14 @@ def smart_watchlist_monitor(symbols):
             # --- 日K MACD/RSI/EMA/涨跌幅/资金流信号 ---
             if kline is not None and not kline.empty:
                 import talib
-                # TA-Lib需要float64 (double)类型的输入数组
                 close = kline['close'].values.astype(np.float64)
                 high = kline['high'].values.astype(np.float64) if 'high' in kline.columns else None
                 low = kline['low'].values.astype(np.float64) if 'low' in kline.columns else None
                 volume = kline['volume'].values.astype(np.float64) if 'volume' in kline.columns else None
-                
                 ema5 = talib.EMA(close, timeperiod=5)
-                ema10 = talib.EMA(close, timeperiod=10)
                 ema20 = talib.EMA(close, timeperiod=20)
                 ema60 = talib.EMA(close, timeperiod=60)
                 kline['EMA5'] = ema5
-                kline['EMA10'] = ema10
                 kline['EMA20'] = ema20
                 kline['EMA60'] = ema60
                 dif, dea, macdhist = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
@@ -1324,21 +1320,55 @@ def smart_watchlist_monitor(symbols):
                 kline['DEA'] = dea
                 rsi = talib.RSI(close, timeperiod=14)
                 kline['RSI'] = rsi
-                if len(kline) >= 2:
-                    if kline.iloc[-2]['EMA5'] < kline.iloc[-2]['EMA20'] and kline.iloc[-1]['EMA5'] > kline.iloc[-1]['EMA20']:
-                        signals.append({'signal': '短线金叉异动（EMA5上穿EMA20）', 'signal_type': '短线金叉异动', 'value': None})
-                    elif kline.iloc[-2]['EMA5'] > kline.iloc[-2]['EMA20'] and kline.iloc[-1]['EMA5'] < kline.iloc[-1]['EMA20']:
-                        signals.append({'signal': '短线死叉异动（EMA5下穿EMA20）', 'signal_type': '短线死叉异动', 'value': None})
-                    if pd.notna(kline.iloc[-1]['DIF']) and pd.notna(kline.iloc[-2]['DIF']):
-                        if kline.iloc[-2]['DIF'] < kline.iloc[-2]['DEA'] and kline.iloc[-1]['DIF'] > kline.iloc[-1]['DEA']:
-                            signals.append({'signal': f"日K MACD金叉（DIF:{kline.iloc[-1]['DIF']:.2f}）", 'signal_type': '日K MACD金叉', 'value': round(kline.iloc[-1]['DIF'], 2)})
-                        elif kline.iloc[-2]['DIF'] > kline.iloc[-2]['DEA'] and kline.iloc[-1]['DIF'] < kline.iloc[-1]['DEA']:
-                            signals.append({'signal': f"日K MACD死叉（DIF:{kline.iloc[-1]['DIF']:.2f}）", 'signal_type': '日K MACD死叉', 'value': round(kline.iloc[-1]['DIF'], 2)})
-                    if pd.notna(kline.iloc[-1]['RSI']) and pd.notna(kline.iloc[-2]['RSI']):
-                        if kline.iloc[-2]['RSI'] < 70 and kline.iloc[-1]['RSI'] > 70:
-                            signals.append({'signal': f"日K RSI超买（RSI:{kline.iloc[-1]['RSI']:.1f}）", 'signal_type': '日K RSI超买', 'value': round(kline.iloc[-1]['RSI'], 1)})
-                        elif kline.iloc[-2]['RSI'] > 30 and kline.iloc[-1]['RSI'] < 30:
-                            signals.append({'signal': f"日K RSI超卖（RSI:{kline.iloc[-1]['RSI']:.1f}）", 'signal_type': '日K RSI超卖', 'value': round(kline.iloc[-1]['RSI'], 1)})
+                # 1. 判断大周期趋势（日线多头排列）
+                is_bull_trend = False
+                if len(kline) >= 60 and kline.iloc[-1]['EMA5'] > kline.iloc[-1]['EMA20'] > kline.iloc[-1]['EMA60']:
+                    is_bull_trend = True
+                # 2. 检查各指标底背离
+                bottom_divs = []
+                # MACD底背离：价格创新低，DIF未创新低
+                if len(close) >= 20:
+                    price_recent_low = np.nanmin(close[-20:])
+                    dif_recent_low = np.nanmin(dif[-20:])
+                    if np.isclose(close[-1], price_recent_low, atol=1e-6) and dif[-1] > dif_recent_low + 1e-6:
+                        bottom_divs.append('MACD')
+                # RSI底背离：价格创新低，RSI未创新低
+                if len(close) >= 20:
+                    rsi_recent_low = np.nanmin(rsi[-20:])
+                    price_recent_low = np.nanmin(close[-20:])
+                    if np.isclose(close[-1], price_recent_low, atol=1e-6) and rsi[-1] > rsi_recent_low + 1e-6:
+                        bottom_divs.append('RSI')
+                # KDJ底背离：价格创新低，J未创新低
+                if high is not None and low is not None and len(close) >= 20:
+                    try:
+                        low_arr = low[-9:]
+                        high_arr = high[-9:]
+                        rsv = (close[-9:] - np.min(low_arr)) / (np.max(high_arr) - np.min(low_arr) + 1e-9) * 100
+                        K = np.zeros_like(rsv)
+                        D = np.zeros_like(rsv)
+                        J = np.zeros_like(rsv)
+                        K[0] = 50
+                        D[0] = 50
+                        for i in range(1, len(rsv)):
+                            K[i] = 2/3 * K[i-1] + 1/3 * rsv[i]
+                            D[i] = 2/3 * D[i-1] + 1/3 * K[i]
+                            J[i] = 3 * K[i] - 2 * D[i]
+                        j_recent_low = np.nanmin(J)
+                        price_recent_low = np.nanmin(close[-9:])
+                        if np.isclose(close[-1], price_recent_low, atol=1e-6) and J[-1] > j_recent_low + 1e-6:
+                            bottom_divs.append('KDJ')
+                    except Exception:
+                        pass
+                # OBV底背离：价格创新低，OBV未创新低
+                if volume is not None and len(close) >= 20:
+                    obv = talib.OBV(close, volume)
+                    obv_recent_low = np.nanmin(obv[-20:])
+                    price_recent_low = np.nanmin(close[-20:])
+                    if np.isclose(close[-1], price_recent_low, atol=1e-6) and obv[-1] > obv_recent_low + 1e-6:
+                        bottom_divs.append('OBV')
+                # 3. 多指标共振信号
+                if is_bull_trend and len(bottom_divs) >= 2:
+                    signals.append({'signal': f"底背离共振（{'、'.join(bottom_divs)}）", 'signal_type': '底背离共振', 'value': None})
                 if snapshot.get('pre_close') and snapshot.get('current_price'):
                     pct = (snapshot['current_price'] - snapshot['pre_close']) / snapshot['pre_close'] * 100
                     if abs(pct) > 3:
@@ -1654,3 +1684,53 @@ def get_us_stock_snapshot(symbol):
     except Exception as e:
         logger.error(f"获取美股 {symbol} 快照失败: {e}")
         return {'error': str(e)}
+
+def get_order_book(symbol, num=10, host='127.0.0.1', port=11111):
+    """
+    查询个股实时摆盘（Futu/OpenD接口）。
+    symbol: 股票代码，形如 '600519.SH', '00700.HK', 'AAPL.US'
+    num: 请求摆盘档数，默认10
+    返回 dict，包含 Bid/Ask 等
+    """
+    from futu import OpenQuoteContext, RET_OK
+    # 解析市场和代码
+    code_parts = symbol.split('.')
+    if len(code_parts) != 2:
+        raise ValueError('symbol格式错误，需如00700.HK')
+    stock_code = code_parts[0]
+    market = code_parts[1].upper()
+    futu_code = f"{market}.{stock_code}"
+    with OpenQuoteContext(host=host, port=port) as ctx:
+        # 先订阅摆盘类型
+        ret_sub, _ = ctx.subscribe([futu_code], ["ORDER_BOOK"], subscribe_push=False)
+        if ret_sub != RET_OK:
+            raise RuntimeError(f"Futu subscribe ORDER_BOOK失败: {ret_sub}")
+        ret, data = ctx.get_order_book(futu_code, num=num)
+        if ret != RET_OK:
+            raise RuntimeError(f"Futu get_order_book失败: {data}")
+        return data
+
+def get_rt_ticker(symbol, num=500, host='127.0.0.1', port=11111):
+    """
+    查询个股实时逐笔（Futu/OpenD接口）。
+    symbol: 股票代码，形如 '600519.SH', '00700.HK', 'AAPL.US'
+    num: 请求逐笔个数，默认500，最大1000
+    返回 DataFrame 或 dict
+    """
+    from futu import OpenQuoteContext, RET_OK
+    # 解析市场和代码
+    code_parts = symbol.split('.')
+    if len(code_parts) != 2:
+        raise ValueError('symbol格式错误，需如00700.HK')
+    stock_code = code_parts[0]
+    market = code_parts[1].upper()
+    futu_code = f"{market}.{stock_code}"
+    with OpenQuoteContext(host=host, port=port) as ctx:
+        # 先订阅逐笔类型
+        ret_sub, err_message = ctx.subscribe([futu_code], ["TICKER"], subscribe_push=False)
+        if ret_sub != RET_OK:
+            raise RuntimeError(f"Futu subscribe TICKER失败: {err_message}")
+        ret, data = ctx.get_rt_ticker(futu_code, num=num)
+        if ret != RET_OK:
+            raise RuntimeError(f"Futu get_rt_ticker失败: {data}")
+        return data
