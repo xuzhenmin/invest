@@ -984,7 +984,7 @@ const Dashboard = () => {
         onCancel={() => setDiagnosisModalVisible(false)}
         footer={null}
         width={1000}
-        bodyStyle={{ padding: '8px', background: theme.cardBackground }}
+        styles={{ body: { padding: '8px', background: theme.cardBackground } }}
         headerStyle={{ padding: '4px 8px', background: theme.headerBg, borderBottom: `1px solid ${theme.border}` }}
         style={{
           top: 20,
@@ -1045,7 +1045,7 @@ const Dashboard = () => {
                   boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
                   borderRadius: 10
                 }}
-                bodyStyle={{ padding: '10px 18px' }}
+                styles={{ body: { padding: '10px 18px' } }}
               >
                 <Row gutter={[24, 8]} justify="center" align="middle">
                   <Col>
@@ -1086,7 +1086,7 @@ const Dashboard = () => {
                   border: '1px solid #333',
                   marginBottom: '6px'
                 }}
-                bodyStyle={{ padding: '8px' }}
+                styles={{ body: { padding: '8px' } }}
               >
                 <ReactECharts
                   option={getChartOption()}
@@ -1104,7 +1104,7 @@ const Dashboard = () => {
                       background: '#2a2a2a',
                       border: '1px solid #333'
                     }}
-                    bodyStyle={{ padding: '8px' }}
+                    styles={{ body: { padding: '8px' } }}
                   >
                     {formatTechnicalAnalysis(diagnosisResult.technical_analysis)}
                   </Card>
@@ -1116,7 +1116,7 @@ const Dashboard = () => {
                       background: '#2a2a2a',
                       border: '1px solid #333'
                     }}
-                    bodyStyle={{ padding: '8px' }}
+                    styles={{ body: { padding: '8px' } }}
                   >
                     {formatCapitalFlowAnalysis(diagnosisResult.capital_flow_analysis)}
                   </Card>
@@ -1132,7 +1132,7 @@ const Dashboard = () => {
                   marginTop: '6px',
                   marginBottom: '6px'
                 }}
-                bodyStyle={{ padding: '8px' }}
+                styles={{ body: { padding: '8px' } }}
               >
                 <ReactECharts
                   option={getCapitalFlowChartOption()}
@@ -1150,7 +1150,7 @@ const Dashboard = () => {
                       background: '#2a2a2a',
                       border: '1px solid #333'
                     }}
-                    bodyStyle={{ padding: '8px' }}
+                    styles={{ body: { padding: '8px' } }}
                   >
                     {formatCapitalDistributionAnalysis(diagnosisResult.capital_distribution_analysis)}
                   </Card>
@@ -1167,7 +1167,7 @@ const Dashboard = () => {
                       background: '#2a2a2a',
                       border: '1px solid #333'
                     }}
-                    bodyStyle={{ padding: '8px' }}
+                    styles={{ body: { padding: '8px' } }}
                   >
                     {formatInvestmentAdvice(diagnosisResult.investment_advice)}
                   </Card>
@@ -1180,7 +1180,7 @@ const Dashboard = () => {
                       background: '#2a2a2a',
                       border: '1px solid #333'
                     }}
-                    bodyStyle={{ padding: '8px' }}
+                    styles={{ body: { padding: '8px' } }}
                   >
                     {formatRiskWarning(diagnosisResult.risk_warning)}
                   </Card>
@@ -1198,7 +1198,7 @@ const Dashboard = () => {
                     boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
                     borderRadius: 10
                   }}
-                  bodyStyle={{ padding: '10px 18px' }}
+                  styles={{ body: { padding: '10px 18px' } }}
                 >
                   <ReactMarkdown
                     children={diagnosisResult.diagnosis_markdown}
@@ -1380,7 +1380,7 @@ const Dashboard = () => {
               <Col span={24}>
                 <Row gutter={[4, 4]}>
                   <Col span={6}>
-                    <Card size="small" style={{ background: theme.cardBackground, border: `1px solid ${theme.border}` }} bodyStyle={{ padding: '8px' }}>
+                    <Card size="small" style={{ background: theme.cardBackground, border: `1px solid ${theme.border}` }} styles={{ body: { padding: '8px' } }}>
                       <Statistic
                         title={<span style={{ color: theme.textSecondary, fontSize: theme.fontSize.small }}>开盘价</span>}
                         value={stockData?.open_price || 0}
@@ -1390,7 +1390,7 @@ const Dashboard = () => {
                     </Card>
                   </Col>
                   <Col span={6}>
-                    <Card size="small" style={{ background: theme.cardBackground, border: `1px solid ${theme.border}` }} bodyStyle={{ padding: '8px' }}>
+                    <Card size="small" style={{ background: theme.cardBackground, border: `1px solid ${theme.border}` }} styles={{ body: { padding: '8px' } }}>
                       <Statistic
                         title={<span style={{ color: theme.textSecondary, fontSize: theme.fontSize.small }}>最高价</span>}
                         value={stockData?.high_price || 0}
@@ -1400,7 +1400,7 @@ const Dashboard = () => {
                     </Card>
                   </Col>
                   <Col span={6}>
-                    <Card size="small" style={{ background: theme.cardBackground, border: `1px solid ${theme.border}` }} bodyStyle={{ padding: '8px' }}>
+                    <Card size="small" style={{ background: theme.cardBackground, border: `1px solid ${theme.border}` }} styles={{ body: { padding: '8px' } }}>
                       <Statistic
                         title={<span style={{ color: theme.textSecondary, fontSize: theme.fontSize.small }}>最低价</span>}
                         value={stockData?.low_price || 0}
@@ -1410,7 +1410,7 @@ const Dashboard = () => {
                     </Card>
                   </Col>
                   <Col span={6}>
-                    <Card size="small" style={{ background: theme.cardBackground, border: `1px solid ${theme.border}` }} bodyStyle={{ padding: '8px' }}>
+                    <Card size="small" style={{ background: theme.cardBackground, border: `1px solid ${theme.border}` }} styles={{ body: { padding: '8px' } }}>
                       <Statistic
                         title={<span style={{ color: theme.textSecondary, fontSize: theme.fontSize.small }}>昨收价</span>}
                         value={stockData?.pre_close || 0}
@@ -1426,7 +1426,7 @@ const Dashboard = () => {
               <Col span={24}>
                 <Row gutter={[4, 4]}>
                   <Col span={8}>
-                    <Card size="small" style={{ background: theme.cardBackground, border: `1px solid ${theme.border}` }} bodyStyle={{ padding: '8px' }}>
+                    <Card size="small" style={{ background: theme.cardBackground, border: `1px solid ${theme.border}` }} styles={{ body: { padding: '8px' } }}>
                       <Statistic
                         title={<span style={{ color: theme.textSecondary, fontSize: theme.fontSize.small }}>成交量</span>}
                         value={stockData?.volume || 0}
@@ -1436,7 +1436,7 @@ const Dashboard = () => {
                     </Card>
                   </Col>
                   <Col span={8}>
-                    <Card size="small" style={{ background: theme.cardBackground, border: `1px solid ${theme.border}` }} bodyStyle={{ padding: '8px' }}>
+                    <Card size="small" style={{ background: theme.cardBackground, border: `1px solid ${theme.border}` }} styles={{ body: { padding: '8px' } }}>
                       <Statistic
                         title={<span style={{ color: theme.textSecondary, fontSize: theme.fontSize.small }}>成交额</span>}
                         value={stockData?.turnover || 0}
@@ -1446,7 +1446,7 @@ const Dashboard = () => {
                     </Card>
                   </Col>
                   <Col span={8}>
-                    <Card size="small" style={{ background: theme.cardBackground, border: `1px solid ${theme.border}` }} bodyStyle={{ padding: '8px' }}>
+                    <Card size="small" style={{ background: theme.cardBackground, border: `1px solid ${theme.border}` }} styles={{ body: { padding: '8px' } }}>
                       <Statistic
                         title={<span style={{ color: theme.textSecondary, fontSize: theme.fontSize.small }}>更新时间</span>}
                         value={stockData?.update_time || '--:--:--'}
@@ -1468,7 +1468,7 @@ const Dashboard = () => {
             borderRadius: '6px',
             marginBottom: '6px'
           }}
-          bodyStyle={{ padding: '8px' }}
+          styles={{ body: { padding: '8px' } }}
         >
           {/* New wrapper div for chart and overlay */}
           <div ref={chartContainerRef} style={{ position: 'relative', width: '100%', height: '400px' }}>
@@ -1587,12 +1587,12 @@ const Dashboard = () => {
                         transition: 'all 0.3s',
                         boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
                       }}
-                      bodyStyle={{
+                      styles={{ body: {
                           padding: '16px',
                           flex: '1',
                           display: 'flex',
                           flexDirection: 'column',
-                      }}
+                      } }}
                       onClick={() => { setSelectedNews(news); setNewsModalVisible(true); }}
                     >
                       <Typography.Title level={5} ellipsis={{ rows: 2 }} style={{ color: '#87CEEB', marginBottom: '12px', minHeight: '44px' }}>
@@ -1623,7 +1623,7 @@ const Dashboard = () => {
           onCancel={() => { setNewsModalVisible(false); setSelectedNews(null); }}
           footer={null}
           width={520}
-          bodyStyle={{ background: 'linear-gradient(135deg, #232526 0%, #1a1a2e 100%)', padding: 4, borderRadius: 16 }}
+          styles={{ body: { background: 'linear-gradient(135deg, #232526 0%, #1a1a2e 100%)', padding: 4, borderRadius: 16 } }}
           style={{ 
             top: 80, 
             borderRadius: 16, 
@@ -1719,7 +1719,7 @@ const Dashboard = () => {
           onCancel={() => setNewsSummaryModalVisible(false)}
           footer={null}
           width={680}
-          bodyStyle={{ background: 'linear-gradient(135deg, #232526 0%, #1a1a2e 100%)', padding: 18, borderRadius: 14 }}
+          styles={{ body: { background: 'linear-gradient(135deg, #232526 0%, #1a1a2e 100%)', padding: 18, borderRadius: 14 } }}
           style={{ top: 100, borderRadius: 14 }}
           title={<span style={{ color: '#1976d2', fontWeight: 700, fontSize: 20 }}>专家资讯总结</span>}
         >
