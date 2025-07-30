@@ -3113,15 +3113,17 @@ def api_trade_query():
 
 @app.route('/api/trade/order', methods=['POST'])
 def api_trade_order():
-    data = request.json or {}
+    data = request.get_json()
     user_id = data.get('user_id')
     symbol = data.get('symbol')
     price = data.get('price')
     amount = data.get('amount')
     side = data.get('side')
-    if not all([user_id, symbol, price, amount, side]):
-        return jsonify({'success': False, 'msg': '参数不全'}), 400
-    result = user_trade_service.order(user_id, symbol, price, amount, side)
+    order_reason = data.get('order_reason')
+    order_reason_time = data.get('order_reason_time')
+    if not user_id or not symbol or price is None or amount is None or not side:
+        return jsonify({'success': False, 'msg': '缺少参数'}), 400
+    result = user_trade_service.order(user_id, symbol, price, amount, side, order_reason, order_reason_time)
     return jsonify(result)
 
 @app.route('/api/trade/orders', methods=['GET'])
@@ -3141,6 +3143,196 @@ def api_trade_cancel():
         return jsonify({'success': False, 'msg': '参数不全'}), 400
     result = user_trade_service.cancel_order(user_id, order_id)
     return jsonify(result)
+
+@app.route('/api/trade/market_state', methods=['GET'])
+def api_trade_market_state():
+    """
+    查询指定市场的交易状态
+    GET /api/trade/market_state?market=SH
+    """
+    market = request.args.get('market')
+    if not market:
+        return jsonify({'success': False, 'msg': '缺少market参数'}), 400
+    
+    result = user_trade_service.get_market_state(market)
+    return jsonify(result)
+
+@app.route('/api/trade/ipo_list', methods=['GET'])
+def api_trade_ipo_list():
+    """
+    查询指定市场的IPO信息
+    GET /api/trade/ipo_list?market=SH
+    """
+    market = request.args.get('market')
+    if not market:
+        return jsonify({'success': False, 'msg': '缺少market参数'}), 400
+
+    result = user_trade_service.get_ipo_list(market)
+    return jsonify(result)
+
+@app.route('/api/trade/trading_days', methods=['GET'])
+def api_trade_trading_days():
+    """
+    查询指定市场或指定标的的交易日历
+    GET /api/trade/trading_days?market=HK&start=2024-01-01&end=2024-01-31
+    GET /api/trade/trading_days?code=HK.00700&start=2024-01-01&end=2024-01-31
+    """
+    market = request.args.get('market')
+    code = request.args.get('code')
+    start = request.args.get('start')
+    end = request.args.get('end')
+    
+    # 至少需要提供市场或股票代码之一
+    if not market and not code:
+        return jsonify({'success': False, 'msg': '缺少market或code参数'}), 400
+
+    result = user_trade_service.get_trading_days(market=market, start=start, end=end, code=code)
+    return jsonify(result)
+
+# ==================== 交易笔记API接口 ====================
+
+@app.route('/api/trade/notes', methods=['POST'])
+def api_create_trade_note():
+    """
+    创建交易笔记
+    POST /api/trade/notes
+    """
+    data = request.get_json()
+    user_id = data.get('user_id')
+    note_data = data.get('note_data', {})
+    
+    if not user_id:
+        return jsonify({'success': False, 'msg': '缺少user_id参数'}), 400
+
+    result = user_trade_service.create_trade_note(user_id, note_data)
+    return jsonify(result)
+
+@app.route('/api/trade/notes', methods=['GET'])
+def api_get_trade_notes():
+    """
+    获取交易笔记列表
+    GET /api/trade/notes?user_id=123&page=1&page_size=20&category=技术分析&search_text=腾讯
+    """
+    user_id = request.args.get('user_id')
+    page = int(request.args.get('page', 1))
+    page_size = int(request.args.get('page_size', 20))
+    
+    # 构建过滤条件
+    filters = {}
+    for key in ['category', 'stock_code', 'trade_type', 'trade_result', 'mood', 'status', 'search_text', 'date_from', 'date_to']:
+        value = request.args.get(key)
+        if value:
+            filters[key] = value
+    
+    # 处理布尔值参数
+    is_important = request.args.get('is_important')
+    if is_important is not None:
+        filters['is_important'] = is_important.lower() == 'true'
+    
+    if not user_id:
+        return jsonify({'success': False, 'msg': '缺少user_id参数'}), 400
+
+    result = user_trade_service.get_trade_notes(user_id, filters, page, page_size)
+    return jsonify(result)
+
+@app.route('/api/trade/notes/<note_id>', methods=['GET'])
+def api_get_trade_note(note_id):
+    """
+    获取单个交易笔记详情
+    GET /api/trade/notes/note_id?user_id=123
+    """
+    user_id = request.args.get('user_id')
+    
+    if not user_id:
+        return jsonify({'success': False, 'msg': '缺少user_id参数'}), 400
+
+    result = user_trade_service.get_trade_note(user_id, note_id)
+    return jsonify(result)
+
+@app.route('/api/trade/notes/<note_id>', methods=['PUT'])
+def api_update_trade_note(note_id):
+    """
+    更新交易笔记
+    PUT /api/trade/notes/note_id
+    """
+    data = request.get_json()
+    user_id = data.get('user_id')
+    update_data = data.get('update_data', {})
+    
+    if not user_id:
+        return jsonify({'success': False, 'msg': '缺少user_id参数'}), 400
+
+    result = user_trade_service.update_trade_note(user_id, note_id, update_data)
+    return jsonify(result)
+
+@app.route('/api/trade/notes/<note_id>', methods=['DELETE'])
+def api_delete_trade_note(note_id):
+    """
+    删除交易笔记
+    DELETE /api/trade/notes/note_id?user_id=123
+    """
+    user_id = request.args.get('user_id')
+    
+    if not user_id:
+        return jsonify({'success': False, 'msg': '缺少user_id参数'}), 400
+
+    result = user_trade_service.delete_trade_note(user_id, note_id)
+    return jsonify(result)
+
+@app.route('/api/trade/notes/statistics', methods=['GET'])
+def api_get_trade_note_statistics():
+    """
+    获取交易笔记统计信息
+    GET /api/trade/notes/statistics?user_id=123
+    """
+    user_id = request.args.get('user_id')
+    
+    if not user_id:
+        return jsonify({'success': False, 'msg': '缺少user_id参数'}), 400
+
+    result = user_trade_service.get_trade_note_statistics(user_id)
+    return jsonify(result)
+
+@app.route('/api/trade/notes/categories', methods=['GET'])
+def api_get_trade_note_categories():
+    """
+    获取交易笔记分类列表
+    GET /api/trade/notes/categories?user_id=123
+    """
+    user_id = request.args.get('user_id')
+    
+    if not user_id:
+        return jsonify({'success': False, 'msg': '缺少user_id参数'}), 400
+
+    result = user_trade_service.get_trade_note_categories(user_id)
+    return jsonify(result)
+
+@app.route('/api/trade/notes/tags', methods=['GET'])
+def api_get_trade_note_tags():
+    """
+    获取交易笔记标签列表
+    GET /api/trade/notes/tags?user_id=123
+    """
+    user_id = request.args.get('user_id')
+    
+    if not user_id:
+        return jsonify({'success': False, 'msg': '缺少user_id参数'}), 400
+
+    result = user_trade_service.get_trade_note_tags(user_id)
+    return jsonify(result)
+
+@app.route('/api/trade/orders_by_symbol', methods=['GET'])
+def api_trade_orders_by_symbol():
+    """
+    查询用户历史订单，支持按股票代码过滤
+    GET /api/trade/orders_by_symbol?user_id=xxx&symbol=00700.HK
+    """
+    user_id = request.args.get('user_id')
+    symbol = request.args.get('symbol')
+    if not user_id:
+        return jsonify({'success': False, 'msg': '缺少user_id参数'}), 400
+    orders = user_trade_service.query_orders_by_symbol(user_id, symbol)
+    return jsonify({'success': True, 'orders': orders})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=True) 
