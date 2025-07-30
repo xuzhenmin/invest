@@ -1,12 +1,13 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Row, Col, Form, Input, Button, Select, Table, Tag, message, Divider, Typography, Card, Modal, Tooltip, Collapse, Spin, Drawer, Tabs } from 'antd';
-import { UserOutlined, FundOutlined, BellOutlined, SettingOutlined, StockOutlined, CheckCircleTwoTone, ThunderboltOutlined, DownOutlined, UpOutlined, PieChartOutlined, ArrowUpOutlined, ArrowDownOutlined, EyeOutlined, EyeInvisibleOutlined, DollarCircleFilled, UserAddOutlined } from '@ant-design/icons';
+import { UserOutlined, FundOutlined, BellOutlined, SettingOutlined, StockOutlined, CheckCircleTwoTone, ThunderboltOutlined, DownOutlined, UpOutlined, PieChartOutlined, ArrowUpOutlined, ArrowDownOutlined, EyeOutlined, EyeInvisibleOutlined, DollarCircleFilled, UserAddOutlined, SaveOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import TradingViewKLineChart from '../components/TradingViewKLineChart';
 import FundamentalAnalysisResult from '../components/FundamentalAnalysisResult';
 import ReactMarkdown from 'react-markdown';
 import CapitalDistributionPie from '../components/CapitalDistributionPie';
 import { InputNumber } from 'antd';
+import TradingNotes from '../components/TradingNotes';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001';
 
@@ -98,6 +99,7 @@ export default function Watchlist() {
   const [timelineModal, setTimelineModal] = useState({ visible: false, symbol: '', events: [] });
   // 智能盯盘折叠控制
   const [smartMonitorCollapsed, setSmartMonitorCollapsed] = useState(false);
+  const [tradingNotesCollapsed, setTradingNotesCollapsed] = useState(true);
   // 资金流相关 state
   const [capitalFlow, setCapitalFlow] = useState(null);
   const [capitalFlowLoading, setCapitalFlowLoading] = useState(false);
@@ -682,23 +684,293 @@ export default function Watchlist() {
 
   // 创建账户后刷新账户信息
   const handleCreateAccount = () => {
-    if (!userId) {
+    if (!userId.trim()) {
       message.error('请先输入用户ID');
-      setCreateAccountModal(false);
       return;
     }
+    setCreateAccountModal(false);
     axios.post(`${API_BASE_URL}/api/trade/init`, { user_id: userId })
       .then(res => {
-        if (res.data && res.data.success) {
-          message.success('账户创建成功');
-          setHasAccount(true);
-          setAccountInfo(res.data.account);
+        if (res.data.success) {
+          message.success('模拟账户创建成功');
+          // 创建成功后查询账户信息
+          axios.get(`${API_BASE_URL}/api/trade/query?user_id=${userId}`)
+            .then(r2 => setAccountInfo(r2.data && r2.data.account ? r2.data.account : null));
         } else {
-          message.error(res.data && res.data.msg || '创建失败');
+          message.error(res.data.msg || '创建失败');
         }
       })
-      .catch(() => message.error('创建失败'))
-      .finally(() => setCreateAccountModal(false));
+      .catch(err => {
+        console.error('创建账户失败:', err);
+        message.error('创建账户失败');
+      });
+  };
+
+  // 手动保存诊断结果到交易笔记
+  const handleSaveDiagnosisToNote = async () => {
+    if (!userId) {
+      message.error('请先输入用户ID');
+      return;
+    }
+    
+    if (!selectedStock || !diagnoseResult || diagnoseResult.error) {
+      message.error('没有可保存的诊断结果');
+      return;
+    }
+
+    try {
+      // 获取股票名称
+      let stockName = selectedStock;
+      
+      // 方式1：从智能盯盘数据中获取
+      if (watchlistEventsByStock[selectedStock] && watchlistEventsByStock[selectedStock].length > 0) {
+        stockName = watchlistEventsByStock[selectedStock][0].name || selectedStock;
+      }
+      
+      // 方式2：从股票快照数据中获取
+      if (stockSnapshots[selectedStock] && stockSnapshots[selectedStock].name) {
+        stockName = stockSnapshots[selectedStock].name;
+      }
+      
+      // 方式3：从股票详情数据中获取
+      if (stockDetailData && stockDetailData.name) {
+        stockName = stockDetailData.name;
+      }
+      
+      // 如果还是没有获取到名称，使用股票代码
+      if (!stockName || stockName === selectedStock) {
+        stockName = selectedStock;
+      }
+      
+      // 构建笔记标题和内容
+      const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+      const title = `${stockName} 智能诊断 - ${today}`;
+      
+      // 格式化诊断内容
+      let content = `🔬 智能诊断报告\n\n`;
+      content += `📈 股票信息\n`;
+      content += `• 股票代码：${selectedStock}\n`;
+      content += `• 股票名称：${stockName}\n`;
+      content += `• 诊断日期：${today}\n\n`;
+      
+      if (diagnoseResult.diagnosis_markdown) {
+        content += `📝 诊断内容\n`;
+        // 将markdown转换为纯文本
+        const markdownText = diagnoseResult.diagnosis_markdown
+          .replace(/#{1,6}\s+/g, '') // 移除标题标记
+          .replace(/\*\*(.*?)\*\*/g, '$1') // 移除粗体标记
+          .replace(/\*(.*?)\*/g, '$1') // 移除斜体标记
+          .replace(/`(.*?)`/g, '$1') // 移除代码标记
+          .replace(/>\s*(.*)/g, '$1') // 移除引用标记
+          .replace(/\n\n/g, '\n') // 合并多余换行
+          .trim();
+        content += markdownText;
+      }
+      
+      if (diagnoseResult.result) {
+        content += `\n\n🎯 诊断结果\n`;
+        content += formatAnalysisData(diagnoseResult.result);
+      }
+      
+      if (diagnoseResult.reason) {
+        content += `\n\n💡 诊断理由\n`;
+        content += formatAnalysisData(diagnoseResult.reason);
+      }
+      
+      if (diagnoseResult.details) {
+        content += `\n\n📋 详细信息\n`;
+        content += formatAnalysisData(diagnoseResult.details);
+      }
+      
+      // 创建笔记数据
+      const noteData = {
+        title: title,
+        content: content,
+        category: '智能诊断',
+        tags: ['手动保存', '诊断报告'],
+        stock_code: selectedStock,
+        stock_name: stockName,
+        trade_type: '观察',
+        trade_reason: '手动保存的智能诊断结果',
+        mood: '平静',
+        lessons: '系统生成的智能诊断报告，用于后续参考',
+        risk_level: '中等',
+        is_important: false,
+        is_public: false,
+        weather: '',
+        market_sentiment: '',
+        technical_indicators: {},
+        fundamental_analysis: '',
+        news_events: [],
+        follow_up_date: ''
+      };
+
+      const response = await axios.post(`${API_BASE_URL}/api/trade/notes`, {
+        user_id: userId,
+        note_data: noteData
+      });
+
+      if (response.data.success) {
+        const isUpdated = response.data.is_updated;
+        if (isUpdated) {
+          message.success(`${stockName}的智能诊断结果已更新到交易笔记`);
+          console.log(`已更新${stockName}的智能诊断记录`);
+        } else {
+          message.success(`${stockName}的智能诊断结果已保存到交易笔记`);
+          console.log(`已保存${stockName}的智能诊断记录`);
+        }
+      } else {
+        message.error(response.data.msg || '保存失败');
+      }
+      
+    } catch (error) {
+      console.error('保存诊断结果到交易笔记失败:', error);
+      message.error('保存失败，请稍后重试');
+    }
+  };
+
+  // 手动保存基本面分析结果到交易笔记
+  const handleSaveFundamentalToNote = async () => {
+    if (!userId) {
+      message.error('请先输入用户ID');
+      return;
+    }
+    
+    if (!selectedStock || !fundamentalData || fundamentalData.error) {
+      message.error('没有可保存的基本面分析结果');
+      return;
+    }
+
+    try {
+      // 获取股票名称
+      let stockName = selectedStock;
+      
+      // 方式1：从智能盯盘数据中获取
+      if (watchlistEventsByStock[selectedStock] && watchlistEventsByStock[selectedStock].length > 0) {
+        stockName = watchlistEventsByStock[selectedStock][0].name || selectedStock;
+      }
+      
+      // 方式2：从股票快照数据中获取
+      if (stockSnapshots[selectedStock] && stockSnapshots[selectedStock].name) {
+        stockName = stockSnapshots[selectedStock].name;
+      }
+      
+      // 方式3：从股票详情数据中获取
+      if (stockDetailData && stockDetailData.name) {
+        stockName = stockDetailData.name;
+      }
+      
+      // 如果还是没有获取到名称，使用股票代码
+      if (!stockName || stockName === selectedStock) {
+        stockName = selectedStock;
+      }
+      
+      // 构建笔记标题和内容
+      const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+      const title = `${stockName} 基本面分析 - ${today}`;
+      
+      // 格式化基本面分析内容
+      let content = `📊 基本面分析报告\n\n`;
+      content += `📈 股票信息\n`;
+      content += `• 股票代码：${selectedStock}\n`;
+      content += `• 股票名称：${stockName}\n`;
+      content += `• 分析日期：${today}\n\n`;
+      
+      if (fundamentalData.valuation) {
+        content += `💰 估值分析\n`;
+        content += formatAnalysisData(fundamentalData.valuation);
+        content += `\n`;
+      }
+      
+      if (fundamentalData.fundamental) {
+        content += `📋 基本面数据\n`;
+        content += formatAnalysisData(fundamentalData.fundamental);
+        content += `\n`;
+      }
+      
+      if (fundamentalData.analysis) {
+        content += `🔍 分析结果\n`;
+        content += formatAnalysisData(fundamentalData.analysis);
+        content += `\n`;
+      }
+      
+      // 创建笔记数据
+      const noteData = {
+        title: title,
+        content: content,
+        category: '基本面分析',
+        tags: ['手动保存', '分析报告'],
+        stock_code: selectedStock,
+        stock_name: stockName,
+        trade_type: '观察',
+        trade_reason: '手动保存的基本面分析结果',
+        mood: '平静',
+        lessons: '系统生成的基本面分析报告，用于后续参考',
+        risk_level: '中等',
+        is_important: false,
+        is_public: false,
+        weather: '',
+        market_sentiment: '',
+        technical_indicators: {},
+        fundamental_analysis: '',
+        news_events: [],
+        follow_up_date: ''
+      };
+
+      const response = await axios.post(`${API_BASE_URL}/api/trade/notes`, {
+        user_id: userId,
+        note_data: noteData
+      });
+
+      if (response.data.success) {
+        const isUpdated = response.data.is_updated;
+        if (isUpdated) {
+          message.success(`${stockName}的基本面分析结果已更新到交易笔记`);
+          console.log(`已更新${stockName}的基本面分析记录`);
+        } else {
+          message.success(`${stockName}的基本面分析结果已保存到交易笔记`);
+          console.log(`已保存${stockName}的基本面分析记录`);
+        }
+      } else {
+        message.error(response.data.msg || '保存失败');
+      }
+      
+    } catch (error) {
+      console.error('保存基本面分析结果到交易笔记失败:', error);
+      message.error('保存失败，请稍后重试');
+    }
+  };
+
+  // 格式化分析数据为易读的文本
+  const formatAnalysisData = (data, indent = 0) => {
+    if (!data) return '';
+    
+    const prefix = '  '.repeat(indent);
+    let result = '';
+    
+    if (typeof data === 'string') {
+      return `${prefix}${data}\n`;
+    } else if (typeof data === 'number') {
+      return `${prefix}${data.toFixed(2)}\n`;
+    } else if (typeof data === 'boolean') {
+      return `${prefix}${data ? '是' : '否'}\n`;
+    } else if (Array.isArray(data)) {
+      data.forEach((item, index) => {
+        result += `${prefix}${index + 1}. ${formatAnalysisData(item, indent + 1)}`;
+      });
+    } else if (typeof data === 'object') {
+      Object.entries(data).forEach(([key, value]) => {
+        if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+          result += `${prefix}${key}：\n`;
+          result += formatAnalysisData(value, indent + 1);
+        } else {
+          const formattedValue = typeof value === 'number' ? value.toFixed(2) : String(value);
+          result += `${prefix}• ${key}：${formattedValue}\n`;
+        }
+      });
+    }
+    
+    return result;
   };
 
   // 在tradeModal弹窗中，买入/卖出按钮点击时调用下单接口
@@ -722,6 +994,8 @@ export default function Watchlist() {
       price: tradePrice,
       amount: tradeAmount,
       side,
+      order_reason: tradeModal.signal?.content || '',
+      order_reason_time: tradeModal.signal?.time || ''
     }).then(res => {
       if (res.data && res.data.success) {
         message.success(res.data.msg || '下单成功');
@@ -729,6 +1003,34 @@ export default function Watchlist() {
         // 刷新账户信息
         axios.get(`${API_BASE_URL}/api/trade/query`, { params: { user_id: userId } })
           .then(r2 => setAccountInfo(r2.data && r2.data.account ? r2.data.account : null));
+        // 自动记笔记
+        try {
+          const stockCode = tradeModal.stock.symbol;
+          const stockName = tradeModal.stock.name || stockCode;
+          const today = new Date();
+          const yyyy = today.getFullYear();
+          const mm = String(today.getMonth() + 1).padStart(2, '0');
+          const dd = String(today.getDate()).padStart(2, '0');
+          const dateStr = `${yyyy}-${mm}-${dd}`;
+          const noteTitle = `${stockName} - ${side === 'buy' ? '买入' : '卖出'} - ${dateStr}`;
+          const noteContent = `自动记录：${side === 'buy' ? '买入' : '卖出'}${stockName}，数量${tradeAmount}，价格${tradePrice}`;
+          axios.post(`${API_BASE_URL}/api/trade/notes`, {
+            user_id: userId,
+            note_data: {
+              title: noteTitle,
+              stock_code: stockCode,
+              stock_name: stockName,
+              trade_type: side === 'buy' ? '买入' : '卖出',
+              trade_price: tradePrice,
+              trade_amount: tradeAmount,
+              category: '自动记录',
+              content: noteContent,
+              created_time: today.toISOString(),
+              tags: ['自动记录'],
+              // 其他字段可按需补充
+            }
+          });
+        } catch (e) { /* 忽略自动记笔记异常 */ }
       } else {
         message.error(res.data && res.data.msg || '下单失败');
       }
@@ -1145,17 +1447,63 @@ export default function Watchlist() {
                     {fundamentalData.error}
                   </Card>
                 ) : (
-                  <FundamentalAnalysisResult data={fundamentalData} />
+                  <Card 
+                    style={{ background: '#232a36', borderRadius: 10, boxShadow: '0 2px 8px #0003', border: 'none', padding: 0 }} 
+                    styles={{ body: { padding: 16 } }}
+                    title={
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span style={{ color: '#fff', fontSize: 16, fontWeight: 600 }}>基本面分析结果</span>
+                        <div style={{ marginRight: 30 }}>
+                          <Tooltip title="保存到交易笔记">
+                            <Button
+                              type="text"
+                              icon={<SaveOutlined />}
+                              style={{ 
+                                color: '#722ed1', 
+                                border: 'none',
+                                background: 'transparent',
+                                fontSize: 16
+                              }}
+                              onClick={handleSaveFundamentalToNote}
+                            />
+                          </Tooltip>
+                        </div>
+                      </div>
+                    }
+                  >
+                    <FundamentalAnalysisResult data={fundamentalData} />
+                  </Card>
                 )
               )}
               {/* 一键诊断结果弹窗 */}
               <Modal
-                title="一键诊断"
+                title={
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span>一键诊断</span>
+                    {diagnoseResult && !diagnoseResult.error && (
+                      <div style={{ marginRight: 30 }}>
+                        <Tooltip title="保存到交易笔记">
+                          <Button
+                            type="text"
+                            icon={<SaveOutlined />}
+                            style={{ 
+                              color: '#722ed1', 
+                              border: 'none',
+                              background: 'transparent',
+                              fontSize: 16
+                            }}
+                            onClick={handleSaveDiagnosisToNote}
+                          />
+                        </Tooltip>
+                      </div>
+                    )}
+                  </div>
+                }
                 open={diagnoseModalOpen}
                 onCancel={() => setDiagnoseModalOpen(false)}
                 footer={null}
                 width={700}
-                bodyStyle={{ background: '#232a36', color: '#fff', maxHeight: 600, overflowY: 'auto' }}
+                styles={{ body: { background: '#232a36', color: '#fff', maxHeight: 600, overflowY: 'auto' } }}
                 style={{ background: '#232a36' }}
               >
                 {diagnoseLoading ? (
@@ -1190,7 +1538,7 @@ export default function Watchlist() {
                 onCancel={() => setTimelineModal({ visible: false, symbol: '', signals: [] })}
                 footer={null}
                 width={400}
-                bodyStyle={{ background: '#232a36', color: '#fff', maxHeight: 600, overflowY: 'auto', borderRadius: 12, padding: 0 }}
+                styles={{ body: { background: '#232a36', color: '#fff', maxHeight: 600, overflowY: 'auto', borderRadius: 12, padding: 0 } }}
                 style={{ top: 80, borderRadius: 12 }}
                 closeIcon={<span style={{ color: '#fff', fontSize: 20 }}>×</span>}
                 title={null}
@@ -1236,7 +1584,7 @@ export default function Watchlist() {
             onOk={() => setShowReasonModal(false)}
             onCancel={() => setShowReasonModal(false)}
             footer={null}
-            bodyStyle={{ background: '#232a36', color: '#fff' }}
+            styles={{ body: { background: '#232a36', color: '#fff' } }}
             style={{ background: '#232a36' }}
           >
             {formatReasonContent(reasonContent)}
@@ -1491,7 +1839,7 @@ export default function Watchlist() {
                   <Table
                     columns={columns}
                     dataSource={hitAlerts}
-                    rowKey={(r, i) => i}
+                    rowKey="code"
                     pagination={false}
                     style={{ background: '#181c24', color: '#e6f7ff', borderRadius: 8, boxShadow: '0 2px 8px #0003' }}
                     bordered
@@ -1511,7 +1859,7 @@ export default function Watchlist() {
                         <Table
                           columns={columns}
                           dataSource={unhitAlerts}
-                          rowKey={(r, i) => i}
+                          rowKey="code"
                           pagination={false}
                           style={{ background: '#181c24', color: '#e6f7ff', borderRadius: 8, boxShadow: '0 2px 8px #0003' }}
                           bordered
@@ -1573,7 +1921,11 @@ export default function Watchlist() {
                         onMouseLeave={() => setShowAccountPopover(false)}
                       >
                         <UserOutlined style={{ color: '#40a9ff', marginRight: 6, fontSize: 18 }} />
-                        <span style={{ marginRight: 8 }}>资金: {accountInfo.account?.cash?.toLocaleString(undefined, { maximumFractionDigits: 2 })} 元</span>
+                        <span style={{ marginRight: 8 }}>
+                          总资产: <span style={{ 
+                            color: accountInfo.total_pnl > 0 ? '#ff4d4f' : accountInfo.total_pnl < 0 ? '#52c41a' : '#fff'
+                          }}>{accountInfo.total_asset?.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span> 元
+                        </span>
                         <span style={{ color: '#b0bec5', fontWeight: 500, fontSize: 13 }}>持仓: {Object.keys(accountInfo.account?.positions || {}).length}只</span>
                         {/* 账户详细信息卡片 */}
                         {showAccountPopover && (
@@ -1615,34 +1967,41 @@ export default function Watchlist() {
                             </div>
                             <div style={{ borderTop: '1px solid #313a4d', margin: '12px 0 10px 0' }} />
                             <div style={{ color: '#faad14', fontWeight: 600, fontSize: 14, marginBottom: 8 }}>持仓明细</div>
-                            <div style={{ maxHeight: 180, overflowY: 'auto' }}>
-                              <table style={{ width: '100%', borderCollapse: 'collapse', background: 'none', fontSize: 12 }}>
+                            <div style={{ maxWidth: '100%', overflowX: 'auto', paddingBottom: 4 }}>
+                              <table style={{ minWidth: 320, borderCollapse: 'collapse', background: 'none', fontSize: 12 }}>
                                 <thead>
-                                  <tr style={{ color: '#b0bec5', borderBottom: '1px solid #313a4d' }}>
-                                    <th style={{ textAlign: 'left', fontWeight: 500, padding: '2px 0' }}>名称/代码</th>
-                                    <th style={{ textAlign: 'right', fontWeight: 500, padding: '2px 0' }}>数量</th>
-                                    <th style={{ textAlign: 'right', fontWeight: 500, padding: '2px 0' }}>成本</th>
-                                    <th style={{ textAlign: 'right', fontWeight: 500, padding: '2px 0' }}>盈亏</th>
-                                    <th style={{ textAlign: 'right', fontWeight: 500, padding: '2px 0' }}>盈亏率</th>
+                                  <tr style={{ color: '#b0bec5', borderBottom: '1px solid #313a4d', whiteSpace: 'nowrap' }}>
+                                    <th style={{ textAlign: 'left', fontWeight: 500, padding: '2px 0', minWidth: 70 }}>名称/代码</th>
+                                    <th style={{ textAlign: 'right', fontWeight: 500, padding: '2px 0', minWidth: 36 }}>数量</th>
+                                    <th style={{ textAlign: 'right', fontWeight: 500, padding: '2px 0', minWidth: 36 }}>成本</th>
+                                    <th style={{ textAlign: 'right', fontWeight: 500, padding: '2px 0', minWidth: 36 }}>盈亏</th>
+                                    <th style={{ textAlign: 'right', fontWeight: 500, padding: '2px 0', minWidth: 44 }}>盈亏率</th>
+                                    <th style={{ textAlign: 'right', fontWeight: 500, padding: '2px 0', minWidth: 44 }}>持仓天数</th>
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {Object.entries(accountInfo.account?.positions || {}).map(([code, pos]) => {
-                                    const name = stockSnapshots[code]?.name || code;
-                                    const amount = pos.amount;
-                                    const cost = pos.cost;
-                                    const pnl = accountInfo.positions_pnl?.[code] ?? null;
-                                    const pnlRatio = accountInfo.positions_pnl_ratio?.[code] ?? null;
-                                    return (
-                                      <tr key={code} style={{ borderBottom: '1px solid #232a36' }}>
-                                        <td style={{ color: '#40a9ff', fontWeight: 600, padding: '2px 0' }}>{name}<br /><span style={{ color: '#b0bec5', fontSize: 11 }}>{code}</span></td>
-                                        <td style={{ textAlign: 'right', color: '#fff', padding: '2px 0' }}>{amount}</td>
-                                        <td style={{ textAlign: 'right', color: '#fff', padding: '2px 0' }}>{cost?.toFixed(2)}</td>
-                                        <td style={{ textAlign: 'right', fontWeight: 700, color: pnl > 0 ? '#ff4d4f' : pnl < 0 ? '#52c41a' : '#fff', padding: '2px 0' }}>{pnl > 0 ? '+' : ''}{pnl?.toFixed(2)}</td>
-                                        <td style={{ textAlign: 'right', fontWeight: 600, color: pnlRatio > 0 ? '#ff7875' : pnlRatio < 0 ? '#95de64' : '#b0bec5', padding: '2px 0' }}>{pnlRatio !== null && pnlRatio !== undefined ? ((pnlRatio > 0 ? '+' : '') + (pnlRatio * 100).toFixed(2) + '%') : '-'}</td>
-                                      </tr>
-                                    );
-                                  })}
+                                  {Object.entries(accountInfo.account?.positions || {}).length === 0 ? (
+                                    <tr><td colSpan={6} style={{ color: '#b0bec5', fontSize: 13, padding: 12, textAlign: 'center' }}>暂无持仓</td></tr>
+                                  ) : (
+                                    Object.entries(accountInfo.account?.positions || {}).map(([code, pos]) => {
+                                      const name = stockSnapshots[code]?.name || code;
+                                      const amount = pos.amount;
+                                      const cost = pos.cost;
+                                      const pnl = accountInfo.positions_pnl?.[code] ?? null;
+                                      const pnlRatio = accountInfo.positions_pnl_ratio?.[code] ?? null;
+                                      const days = accountInfo.positions_days?.[code];
+                                      return (
+                                        <tr key={code} style={{ borderBottom: '1px solid #232a36', whiteSpace: 'nowrap' }}>
+                                          <td style={{ color: '#40a9ff', fontWeight: 600, padding: '2px 0' }}>{name}<br /><span style={{ color: '#b0bec5', fontSize: 11 }}>{code}</span></td>
+                                          <td style={{ textAlign: 'right', color: '#fff', padding: '2px 0' }}>{amount}</td>
+                                          <td style={{ textAlign: 'right', color: '#fff', padding: '2px 0' }}>{cost?.toFixed(2)}</td>
+                                          <td style={{ textAlign: 'right', fontWeight: 700, color: pnl > 0 ? '#ff4d4f' : pnl < 0 ? '#52c41a' : '#fff', padding: '2px 0' }}>{pnl > 0 ? '+' : ''}{pnl?.toFixed(2)}</td>
+                                          <td style={{ textAlign: 'right', fontWeight: 600, color: pnlRatio > 0 ? '#ff7875' : pnlRatio < 0 ? '#95de64' : '#b0bec5', padding: '2px 0' }}>{pnlRatio !== null && pnlRatio !== undefined ? ((pnlRatio > 0 ? '+' : '') + (pnlRatio * 100).toFixed(2) + '%') : '-'}</td>
+                                          <td style={{ textAlign: 'right', color: '#faad14', fontWeight: 600, padding: '2px 0' }}>{days !== undefined && days !== null ? days : '-'}</td>
+                                        </tr>
+                                      );
+                                    })
+                                  )}
                                 </tbody>
                               </table>
                             </div>
@@ -1830,37 +2189,12 @@ export default function Watchlist() {
                   </div>
                 )}
               </Card>
-              <Modal
-                open={timelineModal.visible}
-                onCancel={() => setTimelineModal({ visible: false, symbol: '', signals: [] })}
-                footer={null}
-                width={400}
-                bodyStyle={{ background: '#232a36', color: '#fff', maxHeight: 600, overflowY: 'auto', borderRadius: 12, padding: 0 }}
-                style={{ top: 80, borderRadius: 12 }}
-                closeIcon={<span style={{ color: '#fff', fontSize: 20 }}>×</span>}
-                title={null}
-              >
-                <div style={{ padding: '18px 18px 0 18px', borderBottom: '1px solid #2b2f3a', background: 'none', borderTopLeftRadius: 12, borderTopRightRadius: 12, marginBottom: 0 }}>
-                  <span style={{ color: '#40a9ff', fontWeight: 700, fontSize: 15 }}>{timelineModal.symbol}</span>
-                </div>
-                <div style={{ padding: '12px 18px 18px 18px', position: 'relative' }}>
-                  <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, borderRadius: 5, background: 'linear-gradient(180deg,#13c2c2 0%,#40a9ff 100%)', opacity: 0.7 }} />
-                  <div style={{ marginLeft: 18, display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                    {Array.isArray(timelineModal.signals) && timelineModal.signals.length > 0
-                      ? timelineModal.signals.map((event, idx) => (
-                          <div key={event.time + event.content} style={{ display: 'flex', alignItems: 'flex-start', minHeight: 36, position: 'relative' }}>
-                            <div style={{ position: 'absolute', left: -14, top: 6, width: 16, height: 16, background: 'radial-gradient(circle,#40a9ff 60%,#13c2c2 100%)', border: '2px solid #fff', borderRadius: '50%', boxShadow: '0 0 6px #13c2c2', zIndex: 2 }} />
-                            <div style={{ marginLeft: 10, background: 'linear-gradient(90deg,#232a36 60%,#181c24 100%)', borderRadius: 7, boxShadow: '0 2px 8px #0003', padding: '4px 8px', minWidth: 120, maxWidth: 260, color: '#fff', border: '1.2px solid #313a4d', fontSize: 12 }}>
-                              <div style={{ fontWeight: 700, fontSize: 13, color: '#40a9ff', marginBottom: 1 }}>{renderSignalContent(event.content, false)}</div>
-                              <div style={{ color: '#b0bec5', fontSize: 11, marginTop: 1 }}>{event.time}</div>
-                            </div>
-                          </div>
-                        ))
-                      : <div style={{ color: '#b0bec5', fontSize: 13, padding: 12 }}>暂无事件</div>
-                    }
-                  </div>
-                </div>
-              </Modal>
+              <TradingNotes 
+                userId={userId}
+                visible={!tradingNotesCollapsed}
+                onToggle={() => setTradingNotesCollapsed(!tradingNotesCollapsed)}
+                stockSnapshots={stockSnapshots}
+              />
             </Col>
           </Row>
           <style>{`
