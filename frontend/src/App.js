@@ -1,6 +1,7 @@
 import React from 'react';
 import Dashboard from './pages/Dashboard';
 import Watchlist from './pages/Watchlist';
+import ShareNote from './pages/ShareNote';
 import 'antd/dist/reset.css';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 
@@ -10,6 +11,7 @@ function App() {
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/watchlist" element={<Watchlist />} />
+        <Route path="/share/note/:noteId" element={<ShareNote />} />
       </Routes>
     </Router>
   );
