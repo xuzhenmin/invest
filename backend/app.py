@@ -3334,5 +3334,19 @@ def api_trade_orders_by_symbol():
     orders = user_trade_service.query_orders_by_symbol(user_id, symbol)
     return jsonify({'success': True, 'orders': orders})
 
+@app.route('/share/note/<note_id>', methods=['GET'])
+def api_share_note(note_id):
+    """
+    查询分享的笔记详情（公开接口，不需要user_id验证）
+    GET /share/note/note_id?user_id=123
+    """
+    user_id = request.args.get('user_id')
+    
+    if not user_id:
+        return jsonify({'success': False, 'msg': '缺少user_id参数'}), 400
+
+    result = user_trade_service.get_trade_note(user_id, note_id)
+    return jsonify(result)
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=True) 
