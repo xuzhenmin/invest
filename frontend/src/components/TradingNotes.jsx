@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Card, Button, Modal, Form, Input, Select, DatePicker, Table, Popconfirm, message, Spin, Tag, Tooltip, Drawer } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, BookOutlined, EyeOutlined, EyeInvisibleOutlined } from '@ant-design/icons';
+import { PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, BookOutlined, EyeOutlined, EyeInvisibleOutlined, ShareAltOutlined, CopyOutlined } from '@ant-design/icons';
 import axios from 'axios';
 
 const { TextArea } = Input;
@@ -29,6 +29,9 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
   const [statistics, setStatistics] = useState({});
   const [categories, setCategories] = useState([]);
   const [tags, setTags] = useState([]);
+  const [shareModalVisible, setShareModalVisible] = useState(false);
+  const [shareLink, setShareLink] = useState('');
+  const [currentNote, setCurrentNote] = useState(null);
 
   // 获取笔记列表
   const fetchNotes = async (filters = {}) => {
@@ -44,6 +47,25 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
       message.error('获取笔记失败');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // 根据笔记ID获取单个笔记详情
+  const fetchNoteById = async (noteId) => {
+    if (!userId || !noteId) return null;
+    try {
+      const res = await axios.get(`${API_BASE_URL}/api/trade/notes/${noteId}`, {
+        params: { user_id: userId }
+      });
+      if (res.data.success) {
+        return res.data.note;
+      } else {
+        message.error(res.data.msg || '获取笔记详情失败');
+        return null;
+      }
+    } catch (error) {
+      message.error('获取笔记详情失败');
+      return null;
     }
   };
 
@@ -137,9 +159,13 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
   };
 
   // 查看笔记
-  const handleView = (note) => {
-    setViewNote(note);
-    setViewModalVisible(true);
+  const handleView = async (note) => {
+    // 通过API获取最新的笔记详情
+    const freshNote = await fetchNoteById(note.id);
+    if (freshNote) {
+      setViewNote(freshNote);
+      setViewModalVisible(true);
+    }
   };
 
   // 编辑笔记
@@ -150,6 +176,32 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
       follow_up_date: note.follow_up_date ? new Date(note.follow_up_date) : null
     });
     setModalVisible(true);
+  };
+
+  // 分享笔记
+  const handleShare = (note) => {
+    setCurrentNote(note);
+    // 生成分享链接
+    const shareUrl = `${window.location.origin}/share/note/${note.id}?user_id=${userId}`;
+    setShareLink(shareUrl);
+    setShareModalVisible(true);
+  };
+
+  // 复制分享链接
+  const handleCopyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(shareLink);
+      message.success('分享链接已复制到剪贴板');
+    } catch (error) {
+      // 降级方案：使用传统方法复制
+      const textArea = document.createElement('textarea');
+      textArea.value = shareLink;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      message.success('分享链接已复制到剪贴板');
+    }
   };
 
   // 计算盈亏
@@ -302,7 +354,7 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
     {
       title: '操作',
       key: 'actions',
-      width: 90,
+      width: 120,
       fixed: 'right',
       render: (_, record) => (
         <div style={{ display: 'flex', gap: 4 }}>
@@ -313,6 +365,15 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
               icon={<EditOutlined />}
               onClick={() => handleEdit(record)}
               style={{ color: '#40a9ff' }}
+            />
+          </Tooltip>
+          <Tooltip title="分享">
+            <Button
+              type="text"
+              size="small"
+              icon={<ShareAltOutlined />}
+              onClick={() => handleShare(record)}
+              style={{ color: '#722ed1' }}
             />
           </Tooltip>
           <Popconfirm
@@ -1082,6 +1143,88 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
                 }}
               >
                 编辑
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* 分享笔记模态框 */}
+      <Modal
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <ShareAltOutlined style={{ color: '#722ed1' }} />
+            <span>分享笔记</span>
+          </div>
+        }
+        open={shareModalVisible}
+        onCancel={() => {
+          setShareModalVisible(false);
+          setShareLink('');
+          setCurrentNote(null);
+        }}
+        footer={null}
+        width={500}
+        styles={{ body: { background: '#232a36', color: '#fff' } }}
+        style={{ background: '#232a36' }}
+      >
+        {currentNote && (
+          <div>
+            {/* 笔记基本信息 */}
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ color: '#faad14', fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
+                {currentNote.title}
+              </div>
+              <div style={{ color: '#b0bec5', fontSize: 12 }}>
+                {currentNote.stock_code} {currentNote.stock_name}
+              </div>
+            </div>
+
+            {/* 分享链接 */}
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ color: '#faad14', fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+                分享链接
+              </div>
+              <div style={{ 
+                background: '#181c24', 
+                padding: 12, 
+                borderRadius: 8, 
+                border: '1px solid #313a4d',
+                wordBreak: 'break-all',
+                fontSize: 12,
+                color: '#b0bec5'
+              }}>
+                {shareLink}
+              </div>
+            </div>
+
+            {/* 操作按钮 */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
+              <Button
+                onClick={() => {
+                  setShareModalVisible(false);
+                  setShareLink('');
+                  setCurrentNote(null);
+                }}
+                style={{ 
+                  background: '#232a36', 
+                  border: '1px solid #313a4d', 
+                  color: '#b0bec5' 
+                }}
+              >
+                取消
+              </Button>
+              <Button
+                onClick={handleCopyLink}
+                type="primary"
+                icon={<CopyOutlined />}
+                style={{ 
+                  background: '#722ed1', 
+                  border: 'none', 
+                  fontWeight: 600 
+                }}
+              >
+                复制链接
               </Button>
             </div>
           </div>
