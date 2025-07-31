@@ -94,6 +94,14 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
     }
   }, [visible, userId]);
 
+  // 监听stockSnapshots变化，实时更新盈亏计算
+  useEffect(() => {
+    if (modalVisible && editingNote) {
+      // 当编辑模态框打开时，实时更新盈亏
+      updateProfitLossWithLatestPrice();
+    }
+  }, [stockSnapshots, modalVisible, editingNote]);
+
   // 保存笔记
   const handleSave = async (values) => {
     if (!userId) return;
@@ -204,12 +212,26 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
     }
   };
 
+  // 获取最新实时价格
+  const getLatestPrice = (stockCode) => {
+    if (!stockCode || !stockSnapshots[stockCode]) return 0;
+    const stock = stockSnapshots[stockCode];
+    // 优先使用current_price，如果没有则使用last_price
+    return stock.current_price || stock.last_price || 0;
+  };
+
   // 计算盈亏
   const calculateProfitLoss = (currentPrice) => {
     const values = form.getFieldsValue();
     const tradePrice = values.trade_price || 0;
     const tradeAmount = values.trade_amount || 0;
     const tradeType = values.trade_type || '买入';
+    const stockCode = values.stock_code;
+    
+    // 如果没有传入currentPrice，则从实时行情获取
+    if (!currentPrice && stockCode) {
+      currentPrice = getLatestPrice(stockCode);
+    }
     
     if (tradePrice > 0 && tradeAmount > 0 && currentPrice > 0) {
       let profitLoss, profitLossRate;
@@ -236,6 +258,17 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
         profit_loss: parseFloat(profitLoss.toFixed(2)),
         profit_loss_rate: parseFloat(profitLossRate.toFixed(4))
       });
+    }
+  };
+
+  // 实时更新盈亏计算
+  const updateProfitLossWithLatestPrice = () => {
+    const stockCode = form.getFieldValue('stock_code');
+    if (stockCode) {
+      const latestPrice = getLatestPrice(stockCode);
+      if (latestPrice > 0) {
+        calculateProfitLoss(latestPrice);
+      }
     }
   };
 
@@ -303,17 +336,44 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
       key: 'profit_loss',
       width: 100,
       render: (value, record) => {
-        if (value === null || value === undefined) return '-';
-        const color = value > 0 ? '#ff4d4f' : value < 0 ? '#52c41a' : '#b0bec5';
-        const rate = record.profit_loss_rate;
+        // 基于最新实时价格计算盈亏
+        const latestPrice = getLatestPrice(record.stock_code);
+        const tradePrice = record.trade_price || 0;
+        const tradeAmount = record.trade_amount || 0;
+        const tradeType = record.trade_type;
+        
+        let realTimeProfitLoss = value;
+        let realTimeProfitLossRate = record.profit_loss_rate;
+        
+        // 如果有实时价格且交易信息完整，重新计算
+        if (latestPrice > 0 && tradePrice > 0 && tradeAmount > 0 && tradeType) {
+          if (tradeType === '买入') {
+            realTimeProfitLoss = (latestPrice - tradePrice) * tradeAmount;
+            realTimeProfitLossRate = tradePrice > 0 ? (latestPrice - tradePrice) / tradePrice : 0;
+          } else if (tradeType === '卖出') {
+            realTimeProfitLoss = (tradePrice - latestPrice) * tradeAmount;
+            realTimeProfitLossRate = latestPrice > 0 ? (tradePrice - latestPrice) / latestPrice : 0;
+          }
+          
+          // 计算手续费
+          const fee = tradePrice * tradeAmount * 0.0003;
+          realTimeProfitLoss = realTimeProfitLoss - fee;
+        }
+        
+        const color = realTimeProfitLoss > 0 ? '#ff4d4f' : realTimeProfitLoss < 0 ? '#52c41a' : '#b0bec5';
         return (
           <div>
             <div style={{ color, fontWeight: 700, fontSize: 12 }}>
-              {value > 0 ? '+' : ''}{value.toFixed(2)}
+              {realTimeProfitLoss > 0 ? '+' : ''}{realTimeProfitLoss.toFixed(2)}
             </div>
-            {rate !== null && rate !== undefined && (
+            {realTimeProfitLossRate !== null && realTimeProfitLossRate !== undefined && (
               <div style={{ color, fontSize: 10 }}>
-                {rate > 0 ? '+' : ''}{(rate * 100).toFixed(2)}%
+                {realTimeProfitLossRate > 0 ? '+' : ''}{(realTimeProfitLossRate * 100).toFixed(2)}%
+              </div>
+            )}
+            {latestPrice > 0 && (
+              <div style={{ color: '#b0bec5', fontSize: 9 }}>
+                实时: ¥{latestPrice.toFixed(2)}
               </div>
             )}
           </div>
@@ -550,7 +610,7 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
                   onChange={(value) => {
                     const selectedStock = stockSnapshots[value];
                     if (selectedStock) {
-                      const currentPrice = selectedStock.current_price || selectedStock.last_price || 0;
+                      const currentPrice = getLatestPrice(value);
                       // 获取当前日期字符串
                       const today = new Date();
                       const yyyy = today.getFullYear();
@@ -604,8 +664,8 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
                   placeholder="请选择交易类型" 
                   style={{ background: '#181c24', border: '1px solid #313a4d' }}
                   onChange={(value) => {
-                    const currentPrice = stockSnapshots[form.getFieldValue('stock_code')]?.current_price || 
-                                       stockSnapshots[form.getFieldValue('stock_code')]?.last_price || 0;
+                    const stockCode = form.getFieldValue('stock_code');
+                    const currentPrice = getLatestPrice(stockCode);
                     if (currentPrice > 0) {
                       calculateProfitLoss(currentPrice);
                     }
@@ -621,15 +681,28 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
             <div style={{ flex: 1 }}>
               <Form.Item
                 name="trade_price"
-                label={<span style={{ color: '#faad14', fontSize: 13 }}>交易价格</span>}
+                label={
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ color: '#faad14', fontSize: 13 }}>交易价格</span>
+                    {(() => {
+                      const stockCode = form.getFieldValue('stock_code');
+                      const latestPrice = getLatestPrice(stockCode);
+                      return latestPrice > 0 ? (
+                        <span style={{ color: '#40a9ff', fontSize: 11 }}>
+                          实时: ¥{latestPrice.toFixed(2)}
+                        </span>
+                      ) : null;
+                    })()}
+                  </div>
+                }
               >
                 <Input 
                   type="number" 
                   placeholder="自动填充当前价格" 
                   style={{ background: '#181c24', border: '1px solid #313a4d', color: '#fff' }} 
                   onChange={(e) => {
-                    const currentPrice = stockSnapshots[form.getFieldValue('stock_code')]?.current_price || 
-                                       stockSnapshots[form.getFieldValue('stock_code')]?.last_price || 0;
+                    const stockCode = form.getFieldValue('stock_code');
+                    const currentPrice = getLatestPrice(stockCode);
                     if (currentPrice > 0) {
                       calculateProfitLoss(currentPrice);
                     }
@@ -646,8 +719,8 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
                   placeholder="0" 
                   style={{ background: '#181c24', border: '1px solid #313a4d', color: '#fff' }} 
                   onChange={(e) => {
-                    const currentPrice = stockSnapshots[form.getFieldValue('stock_code')]?.current_price || 
-                                       stockSnapshots[form.getFieldValue('stock_code')]?.last_price || 0;
+                    const stockCode = form.getFieldValue('stock_code');
+                    const currentPrice = getLatestPrice(stockCode);
                     if (currentPrice > 0) {
                       calculateProfitLoss(currentPrice);
                     }
