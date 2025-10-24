@@ -581,6 +581,14 @@ class UserTradeService:
                             search_text in n.get('content', '').lower() or
                             search_text in n.get('stock_name', '').lower() or
                             search_text in n.get('trade_reason', '').lower()]
+                
+                if filters.get('tags'):
+                    # 支持标签过滤，只要笔记包含任一指定标签即可
+                    filter_tags = filters['tags'] if isinstance(filters['tags'], list) else [filters['tags']]
+                    def has_matching_tag(note):
+                        note_tags = note.get('tags') or []
+                        return any(tag in note_tags for tag in filter_tags)
+                    notes = [n for n in notes if has_matching_tag(n)]
 
             # 按时间倒序排序
             notes.sort(key=lambda x: x.get('created_time', ''), reverse=True)
@@ -930,7 +938,10 @@ class UserTradeService:
                     if '.' in s:
                         code, market = s.split('.')
                         market = market.upper()
-                        if market == 'HK' and code.isdigit():
+                        # 处理板块代码：保持原有格式
+                        if code.startswith('LIST') or code.startswith('BK'):
+                            return f"{market}.{code}"
+                        elif market == 'HK' and code.isdigit():
                             return f"{market}.{code.zfill(5)}"
                         elif market == 'US':
                             return f"US.{code.upper()}"
