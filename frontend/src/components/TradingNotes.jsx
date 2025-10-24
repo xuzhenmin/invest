@@ -32,16 +32,33 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
   const [shareModalVisible, setShareModalVisible] = useState(false);
   const [shareLink, setShareLink] = useState('');
   const [currentNote, setCurrentNote] = useState(null);
+  const [pagination, setPagination] = useState({
+    current: 1,
+    pageSize: 10,
+    total: 0
+  });
+  const [currentFilters, setCurrentFilters] = useState({});
 
   // 获取笔记列表
-  const fetchNotes = async (filters = {}) => {
+  const fetchNotes = async (filters = {}, page = 1, pageSize = 10) => {
     if (!userId) return;
     setLoading(true);
     try {
-      const params = { user_id: userId, ...filters };
+      const params = { 
+        user_id: userId, 
+        page, 
+        page_size: pageSize,
+        ...filters 
+      };
       const res = await axios.get(`${API_BASE_URL}/api/trade/notes`, { params });
       if (res.data.success) {
         setNotes(res.data.notes || []);
+        setPagination({
+          current: res.data.page || page,
+          pageSize: res.data.page_size || pageSize,
+          total: res.data.total || 0
+        });
+        setCurrentFilters(filters);
       }
     } catch (error) {
       message.error('获取笔记失败');
@@ -89,7 +106,7 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
 
   useEffect(() => {
     if (visible && userId) {
-      fetchNotes();
+      fetchNotes({}, 1, pagination.pageSize);
       fetchStatistics();
     }
   }, [visible, userId]);
@@ -137,7 +154,8 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
         setModalVisible(false);
         form.resetFields();
         setEditingNote(null);
-        fetchNotes();
+        // 刷新当前页数据
+        fetchNotes(currentFilters, pagination.current, pagination.pageSize);
         fetchStatistics();
       } else {
         message.error(res.data.msg || '操作失败');
@@ -156,7 +174,8 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
       });
       if (res.data.success) {
         message.success('删除成功');
-        fetchNotes();
+        // 刷新当前页数据
+        fetchNotes(currentFilters, pagination.current, pagination.pageSize);
         fetchStatistics();
       } else {
         message.error(res.data.msg || '删除失败');
@@ -272,17 +291,23 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
     }
   };
 
+  // 处理表格分页变化
+  const handleTableChange = (pagination, filters, sorter) => {
+    fetchNotes(currentFilters, pagination.current, pagination.pageSize);
+  };
+
   // 搜索
   const handleSearch = (values) => {
     const filters = {};
-    if (values.title) filters.title = values.title;
+    if (values.title) filters.search_text = values.title;
     if (values.category) filters.category = values.category;
     if (values.tags && values.tags.length > 0) filters.tags = values.tags;
     if (values.date_range && values.date_range.length === 2) {
-      filters.start_date = formatDate(values.date_range[0]);
-      filters.end_date = formatDate(values.date_range[1]);
+      filters.date_from = formatDate(values.date_range[0]);
+      filters.date_to = formatDate(values.date_range[1]);
     }
-    fetchNotes(filters);
+    // 搜索时重置到第一页
+    fetchNotes(filters, 1, pagination.pageSize);
     setSearchVisible(false);
   };
 
@@ -537,12 +562,13 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
             dataSource={notes}
             rowKey="id"
             pagination={{
-              pageSize: 10,
+              ...pagination,
               showSizeChanger: true,
               showQuickJumper: true,
               showTotal: (total, range) => `第 ${range[0]}-${range[1]} 条，共 ${total} 条`,
               style: { color: '#b0bec5' }
             }}
+            onChange={handleTableChange}
             loading={loading}
             size="small"
             style={{ 
@@ -825,7 +851,7 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
                 mode="tags"
                 placeholder="请输入标签"
                 style={{ background: '#181c24', border: '1px solid #313a4d', minWidth: 200 }}
-                dropdownStyle={{ minWidth: 250 }}
+                styles={{ popup: { root: { minWidth: 250 } } }}
                 optionLabelProp="label"
               >
                 {tags.map(tag => (
@@ -935,7 +961,7 @@ const TradingNotes = ({ userId, visible, onToggle, stockSnapshots = {} }) => {
               mode="multiple"
               placeholder="请选择标签"
               style={{ background: '#181c24', border: '1px solid #313a4d', minWidth: 200 }}
-              dropdownStyle={{ minWidth: 250 }}
+              styles={{ popup: { root: { minWidth: 250 } } }}
               optionLabelProp="label"
             >
               {tags.map(tag => (
