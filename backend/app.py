@@ -662,7 +662,7 @@ def get_kline_data(symbol):
 
 def get_capital_flow_data(symbol):
     """
-    Get capital flow data for a given stock symbol.
+    Get capital flow data for a given stock symbol (last 6 months).
     Returns a dictionary containing capital flow data or None if failed.
     """
     try:
@@ -676,13 +676,20 @@ def get_capital_flow_data(symbol):
             logger.error(f"Invalid stock symbol format: {symbol}")
             return None
 
-        # Get historical capital flow data (last year)
+        # Get historical capital flow data (last 6 months - 180 days)
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=180)).strftime('%Y-%m-%d')
+        
+        logger.info(f"获取资金流向数据: symbol={symbol}, start_date={start_date}, end_date={end_date}")
+        
         ret, historical_data = quote_ctx.get_capital_flow(
             stock_code=f'{market}.{stock_code}',
             period_type=PeriodType.DAY,
-            start=None,  # Default to last year
-            end=None
+            start=start_date,  # 180 days ago
+            end=end_date
         )
+        
+        logger.info(f"历史资金流向数据获取结果: ret={ret}, data_type={type(historical_data)}, data_empty={getattr(historical_data, 'empty', 'N/A')}")
 
         if ret != RET_OK:
             logger.error(f"Failed to get historical capital flow data: {historical_data}")
@@ -1675,6 +1682,11 @@ def diagnose_stock(symbol):
         kline_data = get_kline_data(symbol)
         # 获取资金流向数据
         capital_flow_data = get_capital_flow_data(symbol)
+        logger.info(f"资金流向数据获取结果: {type(capital_flow_data)}, 数据长度: {len(capital_flow_data) if capital_flow_data else 'None'}")
+        if capital_flow_data:
+            logger.info(f"资金流向数据结构: historical={len(capital_flow_data.get('historical', []))}, intraday={len(capital_flow_data.get('intraday', []))}, distribution={len(capital_flow_data.get('distribution', []))}")
+        else:
+            logger.warning(f"资金流向数据获取失败，symbol={symbol}")
         # 获取新闻数据（只取最新10条，拼接标题+内容）
         news_list = []
         try:
@@ -1702,7 +1714,7 @@ def diagnose_stock(symbol):
         {kline_json}
 
         【资金面数据】
-        近30日资金流向（JSON）：
+        近半年资金流向（JSON）：
         {capital_json}
 
         【新闻资讯】
@@ -1798,7 +1810,7 @@ SYSTEM_PROMPT_TEMPLATE = """
     "trend_judgment": "详细的趋势判断，例如：短期震荡整理，中期趋势向上，长期维持牛市格局。"
   },
   "capital_flow_analysis": {
-    "30d_trend": "详细描述近30日资金的净流入/流出情况及其波动特征，例如：近30日累计净流入达到X亿元，资金活跃度较高，但近期波动有所增加。", // 近30日资金流向趋势
+    "30d_trend": "详细描述近半年资金的净流入/流出情况及其波动特征，例如：近半年累计净流入达到X亿元，资金活跃度较高，但近期波动有所增加。", // 近半年资金流向趋势
     "main_capital": "详细描述主力资金的流向和强度，以及其对股价的潜在影响，例如：主力资金连续X日净流入，大单买入强度较高，显示主力资金看好后市，有望推动股价上涨。", // 主力资金动向
     "strength_assessment": "对资金实力进行评估，例如：资金实力雄厚，有能力推动股价上涨。"
   },
@@ -2106,62 +2118,65 @@ def get_stock_news(symbol):
         # 港股市场
         elif market == 'HK':
             try:
-                # 获取港股新闻
+                # 使用新的爬虫服务获取港股新闻
                 try:
-                    # 使用 stock_hk_news_em 接口获取港股新闻
-                    news_df = ak.stock_hk_news_em(symbol=stock_code)
-                    if not news_df.empty:
-                        for _, row in news_df.iterrows():
+                    from service.stock_crawler import get_hk_stock_news
+                    logger.info(f"正在使用爬虫服务获取港股新闻: {stock_code}")
+                    crawled_news = get_hk_stock_news(stock_code, max_news=20)
+                    
+                    if crawled_news:
+                        for news in crawled_news:
                             news_list.append({
-                                'title': row['title'] if 'title' in row else row['新闻标题'],
-                                'content': row['content'] if 'content' in row else row['新闻内容'],
-                                'publish_time': str(row['time'] if 'time' in row else row['发布时间']),
-                                'source': row['source'] if 'source' in row else row['来源'],
-                                'url': row['url'] if 'url' in row else row['链接']
+                                'title': news.get('title', ''),
+                                'content': news.get('content', ''),
+                                'publish_time': news.get('publish_time', ''),
+                                'source': news.get('source', '东方财富网'),
+                                'url': news.get('url', None)
                             })
+                        logger.info(f"爬虫服务成功获取 {len(crawled_news)} 条港股新闻")
+                    else:
+                        logger.warning("爬虫服务未获取到港股新闻")
+                        
                 except Exception as e:
-                    logger.warning(f"获取港股新闻失败: {str(e)}")
+                    logger.error(f"爬虫服务获取港股新闻失败: {str(e)}")
+                    logger.error(traceback.format_exc())
                 
-                # 获取港股公告
-                try:
-                    # 使用 stock_hk_report_em 接口获取港股公告
-                    notice_df = ak.stock_hk_report_em(symbol=stock_code)
-                    if not notice_df.empty:
-                        for _, row in notice_df.iterrows():
-                            news_list.append({
-                                'title': row['title'] if 'title' in row else row['公告标题'],
-                                'content': row['content'] if 'content' in row else row['公告内容'],
-                                'publish_time': str(row['time'] if 'time' in row else row['公告日期']),
-                                'source': '公司公告',
-                                'url': row['url'] if 'url' in row else row['公告链接'] if '公告链接' in row else None
-                            })
-                except Exception as e:
-                    logger.warning(f"获取港股公告失败: {str(e)}")
-                
-                # 获取行业新闻
-                try:
-                    # 获取港股所属行业
-                    stock_info = ak.stock_hk_spot_em()
-                    if not stock_info.empty:
-                        stock_row = stock_info[stock_info['代码'] == stock_code]
-                        if not stock_row.empty and '所属行业' in stock_row.columns:
-                            industry = stock_row['所属行业'].iloc[0]
-                            # 获取行业新闻
-                            industry_news = ak.stock_news_industry(symbol=industry)
-                            if not industry_news.empty:
-                                for _, row in industry_news.iterrows():
-                                    news_list.append({
-                                        'title': row['title'] if 'title' in row else row['新闻标题'],
-                                        'content': row['content'] if 'content' in row else row['新闻内容'],
-                                        'publish_time': str(row['time'] if 'time' in row else row['发布时间']),
-                                        'source': '行业新闻',
-                                        'url': row['url'] if 'url' in row else row['链接']
-                                    })
-                except Exception as e:
-                    logger.warning(f"获取港股行业新闻失败: {str(e)}")
+                # 如果爬虫失败，尝试使用akshare作为备用（虽然这些方法可能不存在）
+                if not news_list:
+                    try:
+                        logger.info("尝试使用akshare作为备用方案")
+                        # 尝试获取港股新闻（这些方法可能不存在）
+                        news_df = ak.stock_hk_news_em(symbol=stock_code)
+                        if not news_df.empty:
+                            for _, row in news_df.iterrows():
+                                news_list.append({
+                                    'title': row['title'] if 'title' in row else row['新闻标题'],
+                                    'content': row['content'] if 'content' in row else row['新闻内容'],
+                                    'publish_time': str(row['time'] if 'time' in row else row['发布时间']),
+                                    'source': row['source'] if 'source' in row else row['来源'],
+                                    'url': row['url'] if 'url' in row else row['链接']
+                                })
+                    except Exception as e:
+                        logger.warning(f"akshare港股新闻接口失败: {str(e)}")
+                    
+                    try:
+                        # 尝试获取港股公告（这些方法可能不存在）
+                        notice_df = ak.stock_hk_report_em(symbol=stock_code)
+                        if not notice_df.empty:
+                            for _, row in notice_df.iterrows():
+                                news_list.append({
+                                    'title': row['title'] if 'title' in row else row['公告标题'],
+                                    'content': row['content'] if 'content' in row else row['公告内容'],
+                                    'publish_time': str(row['time'] if 'time' in row else row['公告日期']),
+                                    'source': '公司公告',
+                                    'url': row['url'] if 'url' in row else row['公告链接'] if '公告链接' in row else None
+                                })
+                    except Exception as e:
+                        logger.warning(f"akshare港股公告接口失败: {str(e)}")
                 
             except Exception as e:
                 logger.error(f"获取港股新闻失败: {str(e)}")
+                logger.error(traceback.format_exc())
                 return jsonify({'error': f'获取港股新闻失败: {str(e)}'}), 500
         
         else:
@@ -2847,8 +2862,16 @@ def get_stock_data_batch():
         data = {}
         for symbol in symbols:
             code_parts = symbol.split('.')
-            code, market = code_parts[0], code_parts[1].upper() if len(code_parts) == 2 else ('', '')
-            norm_symbol = f"{market}.{code.zfill(5) if market=='HK' and code.isdigit() else code}"
+            if len(code_parts) == 2:
+                code, market = code_parts[0], code_parts[1].upper()
+                # 正确的代码格式转换
+                if market == 'HK' and code.isdigit():
+                    norm_symbol = f"{market}.{code.zfill(5)}"
+                else:
+                    norm_symbol = f"{market}.{code}"
+            else:
+                norm_symbol = symbol
+            
             stock_data = None
             if symbol in result:
                 stock_data = result[symbol]
@@ -3347,6 +3370,358 @@ def api_share_note(note_id):
 
     result = user_trade_service.get_trade_note(user_id, note_id)
     return jsonify(result)
+
+@app.route('/api/plates/<market>', methods=['GET'])
+def api_get_plate_list(market):
+    """
+    获取板块列表
+    GET /api/plates/HK?plate_class=CONCEPT
+    """
+    try:
+        import sys
+        sys.path.append(os.path.join(os.path.dirname(__file__), 'app', 'core'))
+        from futu_client import FutuClient
+        from futu import Market, Plate
+        
+        # 解析市场参数
+        market_map = {
+            'HK': Market.HK,
+            'US': Market.US,
+            'SH': Market.SH,
+            'SZ': Market.SZ
+        }
+        
+        if market not in market_map:
+            return jsonify({'error': '不支持的市场类型'}), 400
+        
+        futu_market = market_map[market]
+        
+        # 解析板块分类参数
+        plate_class = request.args.get('plate_class', 'CONCEPT')
+        plate_map = {
+            'CONCEPT': Plate.CONCEPT,
+            'INDUSTRY': Plate.INDUSTRY,
+            'REGION': Plate.REGION,
+            'OTHER': Plate.OTHER
+        }
+        
+        if plate_class not in plate_map:
+            return jsonify({'error': '不支持的板块分类'}), 400
+        
+        futu_plate_class = plate_map[plate_class]
+        
+        # 获取板块列表
+        client = FutuClient()
+        plates = client.get_plate_list(futu_market, futu_plate_class)
+        client.close()
+        
+        return jsonify({
+            'success': True,
+            'market': market,
+            'plate_class': plate_class,
+            'plates': plates,
+            'count': len(plates)
+        })
+        
+    except Exception as e:
+        logger.error(f"获取板块列表失败: {str(e)}")
+        return jsonify({'error': f'获取板块列表失败: {str(e)}'}), 500
+
+@app.route('/api/plates/<market>/all', methods=['GET'])
+def api_get_all_plate_lists(market):
+    """
+    获取指定市场的所有板块分类
+    GET /api/plates/HK/all
+    """
+    try:
+        import sys
+        sys.path.append(os.path.join(os.path.dirname(__file__), 'app', 'core'))
+        from futu_client import FutuClient
+        from futu import Market
+        
+        # 解析市场参数
+        market_map = {
+            'HK': Market.HK,
+            'US': Market.US,
+            'SH': Market.SH,
+            'SZ': Market.SZ
+        }
+        
+        if market not in market_map:
+            return jsonify({'error': '不支持的市场类型'}), 400
+        
+        futu_market = market_map[market]
+        
+        # 获取所有板块分类
+        client = FutuClient()
+        all_plates = client.get_all_plate_lists(futu_market)
+        client.close()
+        
+        return jsonify({
+            'success': True,
+            'market': market,
+            'plate_lists': all_plates
+        })
+        
+    except Exception as e:
+        logger.error(f"获取所有板块列表失败: {str(e)}")
+        return jsonify({'error': f'获取所有板块列表失败: {str(e)}'}), 500
+
+@app.route('/api/plates/<market>/search', methods=['GET'])
+def api_search_plate(market):
+    """
+    搜索板块
+    GET /api/plates/HK/search?plate_class=CONCEPT&keyword=科技
+    """
+    try:
+        import sys
+        sys.path.append(os.path.join(os.path.dirname(__file__), 'app', 'core'))
+        from futu_client import FutuClient
+        from futu import Market, Plate
+        
+        # 解析市场参数
+        market_map = {
+            'HK': Market.HK,
+            'US': Market.US,
+            'SH': Market.SH,
+            'SZ': Market.SZ
+        }
+        
+        if market not in market_map:
+            return jsonify({'error': '不支持的市场类型'}), 400
+        
+        futu_market = market_map[market]
+        
+        # 解析参数
+        plate_class = request.args.get('plate_class', 'CONCEPT')
+        keyword = request.args.get('keyword', '')
+        
+        if not keyword:
+            return jsonify({'error': '缺少搜索关键词'}), 400
+        
+        plate_map = {
+            'CONCEPT': Plate.CONCEPT,
+            'INDUSTRY': Plate.INDUSTRY,
+            'REGION': Plate.REGION,
+            'OTHER': Plate.OTHER
+        }
+        
+        if plate_class not in plate_map:
+            return jsonify({'error': '不支持的板块分类'}), 400
+        
+        futu_plate_class = plate_map[plate_class]
+        
+        # 搜索板块
+        client = FutuClient()
+        matched_plates = client.search_plate_by_name(futu_market, futu_plate_class, keyword)
+        client.close()
+        
+        return jsonify({
+            'success': True,
+            'market': market,
+            'plate_class': plate_class,
+            'keyword': keyword,
+            'plates': matched_plates,
+            'count': len(matched_plates)
+        })
+        
+    except Exception as e:
+        logger.error(f"搜索板块失败: {str(e)}")
+        return jsonify({'error': f'搜索板块失败: {str(e)}'}), 500
+
+@app.route('/api/stocks/plates', methods=['GET'])
+def api_get_stocks_plates():
+    """
+    获取股票所属板块信息
+    GET /api/stocks/plates?codes=HK.00700,HK.09988&plate_type=CONCEPT
+    """
+    try:
+        import sys
+        sys.path.append(os.path.join(os.path.dirname(__file__), 'app', 'core'))
+        from futu_client import FutuClient
+        from futu import Plate
+        
+        # 解析股票代码列表
+        codes_param = request.args.get('codes', '')
+        if not codes_param:
+            return jsonify({'error': '缺少股票代码参数'}), 400
+        
+        codes = [code.strip() for code in codes_param.split(',') if code.strip()]
+        if not codes:
+            return jsonify({'error': '股票代码列表为空'}), 400
+        
+        # 解析板块类型过滤参数
+        plate_type_param = request.args.get('plate_type', '')
+        plate_type = None
+        if plate_type_param:
+            plate_map = {
+                'CONCEPT': Plate.CONCEPT,
+                'INDUSTRY': Plate.INDUSTRY,
+                'REGION': Plate.REGION,
+                'OTHER': Plate.OTHER
+            }
+            if plate_type_param not in plate_map:
+                return jsonify({'error': '不支持的板块类型'}), 400
+            plate_type = plate_map[plate_type_param]
+        
+        # 获取股票所属板块信息
+        client = FutuClient()
+        if plate_type:
+            stocks_plates = client.get_stocks_plates_by_type(codes, plate_type)
+        else:
+            stocks_plates = client.get_owner_plate(codes)
+        client.close()
+        
+        return jsonify({
+            'success': True,
+            'codes': codes,
+            'plate_type': plate_type_param if plate_type_param else 'ALL',
+            'stocks': stocks_plates,
+            'count': len(stocks_plates)
+        })
+        
+    except Exception as e:
+        logger.error(f"获取股票所属板块失败: {str(e)}")
+        return jsonify({'error': f'获取股票所属板块失败: {str(e)}'}), 500
+
+@app.route('/api/stocks/<symbol>/plates', methods=['GET'])
+def api_get_stock_plates(symbol):
+    """
+    获取单个股票的所属板块信息
+    GET /api/stocks/HK.00700/plates
+    """
+    try:
+        import sys
+        sys.path.append(os.path.join(os.path.dirname(__file__), 'app', 'core'))
+        from futu_client import FutuClient
+        
+        # 获取单个股票的所属板块信息
+        client = FutuClient()
+        stock_plates = client.get_stock_plates(symbol)
+        client.close()
+        
+        return jsonify({
+            'success': True,
+            'symbol': symbol,
+            'stock': stock_plates
+        })
+        
+    except Exception as e:
+        logger.error(f"获取股票{symbol}所属板块失败: {str(e)}")
+        return jsonify({'error': f'获取股票所属板块失败: {str(e)}'}), 500
+
+@app.route('/api/plate/ranking/<market>/<plate_class>', methods=['GET'])
+def api_get_plate_ranking(market, plate_class):
+    """
+    获取板块行情排名
+    GET /api/plate/ranking/HK/CONCEPT
+    GET /api/plate/ranking/HK/CONCEPT?date=20240812
+    """
+    try:
+        import sys
+        sys.path.append(os.path.join(os.path.dirname(__file__), 'app', 'core'))
+        from futu_client import FutuClient
+        from service.stock_service import get_plate_ranking, get_plate_ranking_history
+        
+        # 获取日期参数
+        date = request.args.get('date')
+        
+        # 如果指定了日期，查询历史数据
+        if date:
+            logger.info(f"查询{market}市场{plate_class}板块{date}的历史排名数据")
+            result = get_plate_ranking_history(market, plate_class, date)
+            
+            if result['success']:
+                # 转换历史数据格式，使其与实时数据格式一致
+                history_data = result['data']
+                return jsonify({
+                    'success': True,
+                    'market': market,
+                    'plate_class': plate_class,
+                    'date': date,
+                    'total_count': history_data.get('total_count', 0),
+                    'valid_count': len(history_data.get('rankings', [])),
+                    'rankings': history_data.get('rankings', []),
+                    'update_time': history_data.get('update_time', ''),
+                    'is_history': True
+                })
+            else:
+                return jsonify(result), 404
+        else:
+            # 查询实时数据
+            logger.info(f"查询{market}市场{plate_class}板块的实时排名数据")
+            
+            # 初始化FutuClient
+            client = FutuClient()
+            
+            # 获取板块排名
+            result = get_plate_ranking(market, plate_class, client, batch_market_snapshot)
+            
+            # 关闭连接
+            client.close()
+            
+            if result['success']:
+                return jsonify(result)
+            else:
+                return jsonify(result), 500
+            
+    except Exception as e:
+        logger.error(f"获取板块排名失败: {str(e)}")
+        return jsonify({'error': f'获取板块排名失败: {str(e)}'}), 500
+
+@app.route('/api/plate/ranking/all', methods=['GET'])
+def api_get_all_plate_rankings():
+    """
+    获取所有市场的板块排名
+    GET /api/plate/ranking/all
+    """
+    try:
+        import sys
+        sys.path.append(os.path.join(os.path.dirname(__file__), 'app', 'core'))
+        from futu_client import FutuClient
+        from service.stock_service import get_all_markets_plate_rankings
+        
+        # 初始化FutuClient
+        client = FutuClient()
+        
+        # 获取所有市场板块排名
+        result = get_all_markets_plate_rankings(client, batch_market_snapshot)
+        
+        # 关闭连接
+        client.close()
+        
+        if result['success']:
+            return jsonify(result)
+        else:
+            return jsonify(result), 500
+            
+    except Exception as e:
+        logger.error(f"获取所有市场板块排名失败: {str(e)}")
+        return jsonify({'error': f'获取所有市场板块排名失败: {str(e)}'}), 500
+
+@app.route('/api/plate/ranking/history/<market>/<plate_class>', methods=['GET'])
+def api_get_plate_ranking_history(market, plate_class):
+    """
+    获取历史板块排名数据
+    GET /api/plate/ranking/history/HK/CONCEPT?date=20240812
+    """
+    try:
+        from service.stock_service import get_plate_ranking_history
+        
+        # 获取日期参数
+        date = request.args.get('date')
+        
+        # 获取历史数据
+        result = get_plate_ranking_history(market, plate_class, date)
+        
+        if result['success']:
+            return jsonify(result)
+        else:
+            return jsonify(result), 404
+            
+    except Exception as e:
+        logger.error(f"获取历史板块排名失败: {str(e)}")
+        return jsonify({'error': f'获取历史板块排名失败: {str(e)}'}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=True) 
