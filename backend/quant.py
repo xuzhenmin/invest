@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from futu import OpenQuoteContext, RET_OK
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 import requests
 import time as pytime
@@ -60,84 +60,11 @@ def fetch_hk_financials_from_eastmoney(stock_code):
     爬取东方财富港股F10财务数据，返回DataFrame
     stock_code: '01810'（不带.HK后缀）
     """
-    # 使用新的数据接口
-    url = f"https://datacenter.eastmoney.com/securities/api/data/v1/get"
-    
-    # 构建请求参数
-    params = {
-        'reportName': 'RPT_HKF10_FN_INCOME_PC',
-        'columns': 'SECUCODE,SECURITY_CODE,SECURITY_NAME_ABBR,ORG_CODE,REPORT_DATE,DATE_TYPE_CODE,FISCAL_YEAR,START_DATE,STD_ITEM_CODE,STD_ITEM_NAME,AMOUNT',
-        'quoteColumns': '',
-        'filter': f'(SECUCODE="{stock_code}.HK")(REPORT_DATE in (\'2025-03-31\',\'2024-12-31\',\'2024-09-30\',\'2024-06-30\',\'2024-03-31\',\'2023-12-31\',\'2023-09-30\',\'2023-06-30\'))',
-        'pageNumber': '1',
-        'pageSize': '',
-        'sortTypes': '-1,1',
-        'sortColumns': 'REPORT_DATE,STD_ITEM_CODE',
-        'source': 'F10',
-        'client': 'PC',
-        'v': '0008504766745329406'
-    }
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Referer': 'https://datacenter.eastmoney.com/',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive'
-    }
-    
     try:
-        logger.info(f"[fetch_hk_financials_from_eastmoney] 请求港股财务数据: {stock_code}")
-        
-        # 发送请求
-        resp = requests.get(url, params=params, headers=headers, timeout=15)
-        resp.raise_for_status()
-        
-        # 解析JSON响应
-        data = resp.json()
-        
-        # 检查响应状态
-        if not data.get('success', False):
-            logger.error(f"[fetch_hk_financials_from_eastmoney] API返回失败: {data.get('message', 'Unknown error')}")
-            return pd.DataFrame()
-        
-        # 提取数据
-        records = data.get('result', {}).get('data', [])
-        if not records:
-            logger.warning(f"[fetch_hk_financials_from_eastmoney] 无财务数据记录: {stock_code}")
-            return pd.DataFrame()
-        
-        # 转换为DataFrame
-        df = pd.DataFrame(records)
-        
-        # 数据清洗和格式化
-        if not df.empty:
-            # 转换金额字段为数值类型
-            if 'AMOUNT' in df.columns:
-                df['AMOUNT'] = pd.to_numeric(df['AMOUNT'], errors='coerce')
-            
-            # 格式化报告日期
-            if 'REPORT_DATE' in df.columns:
-                df['REPORT_DATE'] = pd.to_datetime(df['REPORT_DATE']).dt.strftime('%Y-%m-%d')
-            
-            # 按报告期和指标代码排序
-            df = df.sort_values(['REPORT_DATE', 'STD_ITEM_CODE'], ascending=[False, True])
-            
-            logger.info(f"[fetch_hk_financials_from_eastmoney] 成功获取 {stock_code} 财务数据，共 {len(df)} 条记录")
-            return df
-        else:
-            logger.warning(f"[fetch_hk_financials_from_eastmoney] 数据为空: {stock_code}")
-            return pd.DataFrame()
-            
-    except requests.exceptions.RequestException as e:
-        logger.error(f"[fetch_hk_financials_from_eastmoney] 网络请求异常 for {stock_code}: {e}")
-        return pd.DataFrame()
-    except ValueError as e:
-        logger.error(f"[fetch_hk_financials_from_eastmoney] JSON解析失败 for {stock_code}: {e}")
-        return pd.DataFrame()
+        from service.stock_crawler import fetch_hk_financials_from_eastmoney as fetch_financials
+        return fetch_financials(stock_code)
     except Exception as e:
-        logger.error(f"[fetch_hk_financials_from_eastmoney] 其他异常 for {stock_code}: {e}")
+        logger.error(f"[fetch_hk_financials_from_eastmoney] 导入爬虫服务失败: {e}")
         return pd.DataFrame()
 
 def get_stock_financials(symbol):
@@ -196,6 +123,9 @@ def quant_get_stock_kline(symbol, start, end):
     start, end: 'YYYY-MM-DD'
     返回 pandas.DataFrame
     """
+    # 添加调试日志，打印入参
+    logger.info(f"[quant_get_stock_kline] 入参: symbol={symbol}, start={start}, end={end}")
+    
     if symbol.endswith('.SZ') or symbol.endswith('.SH'):
         stock_code = symbol.split('.')[0]
         ak_start_date = start.replace('-', '')
@@ -206,7 +136,78 @@ def quant_get_stock_kline(symbol, start, end):
         })
     elif symbol.endswith('.HK'):
         stock_code = symbol.split('.')[0]
-        df = ak.stock_hk_daily(symbol=stock_code)
+        
+        # 优先使用Futu接口查询港股K线
+        df = None
+        try:
+            from futu import OpenQuoteContext, RET_OK, KLType, AuType, SubType
+            
+            # 创建Futu连接
+            quote_ctx = OpenQuoteContext(host='127.0.0.1', port=11111)
+            
+            # 订阅港股K线
+            futu_symbol = f"HK.{stock_code}"
+            ret_sub, err_message = quote_ctx.subscribe([futu_symbol], [SubType.K_DAY], subscribe_push=False)
+            
+            if ret_sub == RET_OK:
+                # 计算需要的K线数量（根据时间范围估算，最多1000根）
+                from datetime import datetime, timedelta
+                start_date = datetime.strptime(start, '%Y-%m-%d')
+                end_date = datetime.strptime(end, '%Y-%m-%d')
+                days_diff = (end_date - start_date).days
+                num_klines = min(days_diff + 30, 1000)  # 多取30天作为缓冲，最多1000根
+                
+                # 添加港股Futu API调用的详细调试日志
+                logger.info(f"[quant_get_stock_kline] 港股Futu API调用参数: futu_symbol={futu_symbol}, num_klines={num_klines}, start_date={start_date}, end_date={end_date}, days_diff={days_diff}")
+                
+                # 获取实时K线数据
+                ret, data = quote_ctx.get_cur_kline(futu_symbol, num_klines, KLType.K_DAY, AuType.QFQ)
+                
+                # 添加Futu API返回结果的调试日志
+                logger.info(f"[quant_get_stock_kline] Futu API返回: ret={ret}, data_shape={data.shape if data is not None and hasattr(data, 'shape') else 'None'}, data_columns={list(data.columns) if data is not None and hasattr(data, 'columns') else 'None'}")
+                
+                if ret == RET_OK and not data.empty:
+                    # 转换Futu数据格式为标准格式
+                    df = data.copy()
+                    
+                    # 重命名列名以匹配标准格式
+                    column_mapping = {
+                        'time_key': 'time_key',
+                        'open': 'open',
+                        'close': 'close', 
+                        'high': 'high',
+                        'low': 'low',
+                        'volume': 'volume'
+                    }
+                    
+                    # 只保留需要的列
+                    available_columns = [col for col in column_mapping.keys() if col in df.columns]
+                    df = df[available_columns]
+                    
+                    # 重命名列
+                    df = df.rename(columns=column_mapping)
+                    
+                    # 添加调试日志，打印重命名后的df
+                    logger.info(f"[quant_get_stock_kline] Futu API重命名后的df: shape={df.shape}, columns={list(df.columns)}, head={df.head().to_dict('records') if not df.empty else 'Empty DataFrame'}")
+                    
+                else:
+                    df = None
+            else:
+                df = None
+                
+        except Exception as e:
+            df = None
+        finally:
+            # 关闭Futu连接
+            try:
+                if 'quote_ctx' in locals():
+                    quote_ctx.close()
+            except:
+                pass
+        
+        # 如果Futu接口失败，使用Akshare兜底
+        if df is None or df.empty:
+            df = ak.stock_hk_daily(symbol=stock_code)
         # 兼容不同数据源的列名
         if '日期' in df.columns:
             df = df.rename(columns={
@@ -223,7 +224,13 @@ def quant_get_stock_kline(symbol, start, end):
             raise ValueError('港股K线数据缺少日期列，无法分析')
         # 修复：先转为字符串再过滤，避免类型不匹配
         df['time_key'] = df['time_key'].astype(str)
+        # 港股Futu接口返回的数据可能包含end+1的数据，需要过滤到用户请求的end日期
         df = df[(df['time_key'] >= start) & (df['time_key'] <= end)]
+        
+        # 添加数据过滤后的调试日志
+        logger.info(f"[quant_get_stock_kline] 港股数据过滤后: 过滤前数据量={len(df) if 'df' in locals() and df is not None else 0}, 过滤后数据量={len(df)}, 过滤条件: start={start}, end={end}")
+        if df is not None and not df.empty:
+            logger.info(f"[quant_get_stock_kline] 港股数据时间范围: 最早={df['time_key'].min()}, 最晚={df['time_key'].max()}")
     elif symbol.endswith('.US'):
         stock_code = symbol.split('.')[0]
         df = ak.stock_us_daily(symbol=stock_code)
@@ -239,6 +246,7 @@ def quant_get_stock_kline(symbol, start, end):
     df = df.sort_values('time_key')
     for span in [5, 10, 12, 20, 26, 30, 60, 120]:
         df[f'EMA{span}'] = df['close'].ewm(span=span, adjust=False).mean()
+    
     return df
 
 def get_stock_news(symbol):
@@ -302,20 +310,35 @@ def get_stock_news(symbol):
         except Exception:
             pass
     elif market == 'HK':
-        # 港股新闻
+        # 港股新闻 - 使用新的爬虫服务
         try:
-            news_df = ak.stock_hk_news_em(symbol=stock_code)
-            if not news_df.empty:
-                for _, row in news_df.iterrows():
-                    news_list.append({
-                        'title': row['title'] if 'title' in row else row.get('新闻标题', ''),
-                        'content': row['content'] if 'content' in row else row.get('新闻内容', ''),
-                        'publish_time': str(row['time'] if 'time' in row else row.get('发布时间', '')),
-                        'source': row['source'] if 'source' in row else row.get('来源', ''),
-                        'url': row['url'] if 'url' in row else row.get('链接', None)
-                    })
-        except Exception:
-            pass
+            from service.stock_crawler import get_hk_stock_news
+            crawled_news = get_hk_stock_news(stock_code, max_news=20)
+            # 转换格式以匹配原有结构
+            for news in crawled_news:
+                news_list.append({
+                    'title': news.get('title', ''),
+                    'content': news.get('content', ''),
+                    'publish_time': news.get('publish_time', ''),
+                    'source': news.get('source', '东方财富网'),
+                    'url': news.get('url', None)
+                })
+        except Exception as e:
+            logger.error(f"[get_stock_news] 港股新闻爬取失败: {e}")
+            # 如果爬虫失败，尝试使用akshare作为备用
+            try:
+                news_df = ak.stock_hk_news_em(symbol=stock_code)
+                if not news_df.empty:
+                    for _, row in news_df.iterrows():
+                        news_list.append({
+                            'title': row['title'] if 'title' in row else row.get('新闻标题', ''),
+                            'content': row['content'] if 'content' in row else row.get('新闻内容', ''),
+                            'publish_time': str(row['time'] if 'time' in row else row.get('发布时间', '')),
+                            'source': row['source'] if 'source' in row else row.get('来源', ''),
+                            'url': row['url'] if 'url' in row else row.get('链接', None)
+                        })
+            except Exception:
+                pass
         # 港股公告
         try:
             notice_df = ak.stock_hk_report_em(symbol=stock_code)
@@ -688,19 +711,28 @@ def batch_market_snapshot(symbols, quote_ctx=None):
     results = {}
     def normalize_symbol(s):
         if '.' in s:
-            code, market = s.split('.')
-            market = market.upper()
-            if market == 'HK' and code.isdigit():
-                return f"{market}.{code.zfill(5)}"
-            elif market == 'US':
-                # 美股统一为US.BABA格式
-                return f"US.{code.upper()}"
+            parts = s.split('.')
+            if len(parts) == 2:
+                code, market = parts
+                market = market.upper()
+                # 处理板块代码：保持原有格式
+                if code.startswith('LIST') or code.startswith('BK'):
+                    return f"{market}.{code}"
+                elif market == 'HK' and code.isdigit():
+                    return f"{market}.{code.zfill(5)}"
+                elif market == 'US':
+                    # 美股统一为US.BABA格式
+                    return f"US.{code.upper()}"
+                else:
+                    return f"{market}.{code}"
             else:
-                return f"{market}.{code}"
+                return s
         else:
             return s
     if quote_ctx is not None:
         norm_syms = [normalize_symbol(s) for s in symbols]
+        print(f"[DEBUG] 原始代码: {symbols}")
+        print(f"[DEBUG] 转换后代码: {norm_syms}")
         market_groups = {}
         for s in norm_syms:
             parts = s.split('.')
@@ -708,17 +740,23 @@ def batch_market_snapshot(symbols, quote_ctx=None):
                 continue
             market = parts[0].upper()
             market_groups.setdefault(market, []).append(s)
+        print(f"[DEBUG] 市场分组: {market_groups}")
         for market, syms in market_groups.items():
             for i in range(0, len(syms), 20):
                 batch = syms[i:i+20]
+                print(f"[DEBUG] 查询批次: {batch}")
                 if market == 'US':
                     print(f"[FUTU美股快照] 查询入参: {batch}")
                 ret, data = quote_ctx.get_market_snapshot(batch)
+                print(f"[DEBUG] 返回状态: {ret}, 数据类型: {type(data)}")
                 if market == 'US':
                     print(f"[FUTU美股快照] 返回ret: {ret}, data: {data if isinstance(data, str) else data.to_dict() if hasattr(data, 'to_dict') else data}")
                 if ret == RET_OK and data is not None and not data.empty:
+                    print(f"[DEBUG] 数据行数: {len(data)}")
                     for idx, row in data.iterrows():
                         results[row['code']] = row.to_dict()
+                else:
+                    print(f"[DEBUG] 数据为空或API调用失败: {data}")
         return results
     # 否则每次新建并自动关闭
     with OpenQuoteContext(host='127.0.0.1', port=11111) as ctx:
@@ -1223,6 +1261,13 @@ def smart_watchlist_monitor(symbols):
             start_str = pytime.strftime('%Y-%m-%d', pytime.localtime(start))
             kline = None
             try:
+                # 港股需要end加一天才能保证查询到当天全天的数据
+                if symbol.endswith('.HK'):
+                    from datetime import datetime, timedelta
+                    end_date = datetime.strptime(end, '%Y-%m-%d')
+                    end_date = end_date + timedelta(days=1)
+                    end = end_date.strftime('%Y-%m-%d')
+                
                 kline = quant_get_stock_kline(symbol, start_str, end)
                 logger.info(f"[smart_watchlist_monitor] {symbol} kline rows: {0 if kline is None else len(kline)}")
             except Exception as e:
@@ -1369,6 +1414,61 @@ def smart_watchlist_monitor(symbols):
                 # 3. 多指标共振信号
                 if is_bull_trend and len(bottom_divs) >= 2:
                     signals.append({'signal': f"底背离共振（{'、'.join(bottom_divs)}）", 'signal_type': '底背离共振', 'value': None})
+                
+                # --- 下跌预警策略 ---
+                if kline is not None and len(kline) >= 5:
+                    try:
+                        # 获取近5日K线数据
+                        recent_5_days = kline.tail(5)
+                        logger.info(f"[下跌预警调试] {symbol} recent_5_days: {recent_5_days.to_dict('records')}")
+                        if len(recent_5_days) >= 3:
+                            # 获取最近3个交易日的数据
+                            today_data = recent_5_days.iloc[-1]
+                            yesterday_data = recent_5_days.iloc[-2]
+                            day_before_yesterday_data = recent_5_days.iloc[-3]
+                            
+                            # 获取最低价和成交量
+                            today_low = float(today_data['low'])
+                            yesterday_low = float(yesterday_data['low'])
+                            day_before_yesterday_low = float(day_before_yesterday_data['low'])
+                            
+                            today_volume = float(today_data['volume'])
+                            yesterday_volume = float(yesterday_data['volume'])
+                            day_before_yesterday_volume = float(day_before_yesterday_data['volume'])
+                            
+                            # 打印调试信息
+                            logger.info(f"[下跌预警调试] {symbol} 近3日数据: 前天最低价={day_before_yesterday_low}, 昨天最低价={yesterday_low}, 今天最低价={today_low}")
+                            logger.info(f"[下跌预警调试] {symbol} 近3日成交量: 前天={day_before_yesterday_volume}, 昨天={yesterday_volume}, 今天={today_volume}")
+                            
+                            # 检查连续新低条件：昨天最低价低于前天最低价，今天最低价低于昨天最低价
+                            continuous_new_low = (yesterday_low < day_before_yesterday_low and today_low < yesterday_low)
+                            
+                            # 检查成交量放量条件：今天成交量是昨天或前天的1.2倍或以上
+                            volume_surge = (today_volume >= yesterday_volume * 1.2 or today_volume >= day_before_yesterday_volume * 1.2)
+                            
+                            logger.info(f"[下跌预警调试] {symbol} 连续新低={continuous_new_low}, 成交量放量={volume_surge}")
+                            
+                            if continuous_new_low and volume_surge:
+                                # 生成信号说明
+                                volume_ratio_yesterday = today_volume / yesterday_volume if yesterday_volume > 0 else 0
+                                volume_ratio_before = today_volume / day_before_yesterday_volume if day_before_yesterday_volume > 0 else 0
+                                
+                                if volume_ratio_yesterday >= 1.2:
+                                    volume_desc = f"成交量{volume_ratio_yesterday:.1f}倍"
+                                elif volume_ratio_before >= 1.2:
+                                    volume_desc = f"成交量{volume_ratio_before:.1f}倍"
+                                else:
+                                    volume_desc = "成交量放量"
+                                
+                                signal_desc = f"下跌预警(连续新低，{volume_desc})"
+                                signals.append({
+                                    'signal': signal_desc, 
+                                    'signal_type': '下跌预警', 
+                                    'value': round(today_low, 2),
+                                    'risk_level': '高危'  # 标记为高危
+                                })
+                    except Exception as e:
+                        logger.warning(f"[smart_watchlist_monitor] {symbol} 下跌预警策略异常: {e}")
                 if snapshot.get('pre_close') and snapshot.get('current_price'):
                     pct = (snapshot['current_price'] - snapshot['pre_close']) / snapshot['pre_close'] * 100
                     if abs(pct) > 3:
@@ -1449,7 +1549,7 @@ def smart_watchlist_monitor(symbols):
             # 新增：每次检测到实际异动信号时打印详细内容
             # 按优先级排序：价格异动 > 技术指标类 > 其他
             def signal_priority(sig):
-                price_keywords = ['涨跌幅异动', '涨速异动', '跌速异动']
+                price_keywords = ['涨跌幅异动', '涨速异动', '跌速异动', '下跌预警']
                 tech_keywords = ['分时异动', 'MACD', 'RSI', 'KDJ', 'OBV', 'CCI', 'WR', 'SAR', 'ATR', '金叉', '死叉', '超买', '超卖', '底背离', '顶背离']
                 s = sig.get('signal', '')
                 if any(k in s for k in price_keywords):
@@ -1467,14 +1567,18 @@ def smart_watchlist_monitor(symbols):
                 if isinstance(short_signal, str) and short_signal.startswith('主力资金大幅流'):
                     short_signal = short_signal.replace('主力资金', '资金', 1)
                 logger.info(f"[smart_watchlist_monitor][ANOMALY] symbol={symbol}, name={name}, time={now_time}, signal={short_signal}, signal_type={short_signal_type}, value={sig.get('value')}")
-                results.append({
+                result_item = {
                     'stock': symbol,
                     'name': name,
                     'time': now_time,
                     'signal': short_signal,
                     'signal_type': short_signal_type,
                     'value': sig.get('value')
-                })
+                }
+                # 如果有风险等级，添加到结果中
+                if 'risk_level' in sig:
+                    result_item['risk_level'] = sig['risk_level']
+                results.append(result_item)
             # --- 新增：存储异动信号到文件 ---
             # 只存储有实际异动信号的结果
             filtered_results = [r for r in results if r.get('signal') and r['signal'] != '无明显异动']
@@ -1496,14 +1600,18 @@ def smart_watchlist_monitor(symbols):
                     for r in filtered_results:
                         # 写入 signal, signal_type, value
                         if r.get('signal') and r.get('signal_type'):
-                            new_by_stock[r['stock']].append({
+                            signal_item = {
                                 'stock': r['stock'],
                                 'name': r['name'],
                                 'time': r['time'],
                                 'signal': r['signal'],
                                 'signal_type': r['signal_type'],
                                 'value': r.get('value')
-                            })
+                            }
+                            # 如果有风险等级，添加到存储中
+                            if 'risk_level' in r:
+                                signal_item['risk_level'] = r['risk_level']
+                            new_by_stock[r['stock']].append(signal_item)
                     # 合并逻辑
                     N = 100  # 每个股票最多保留N条
                     for stock, new_signals in new_by_stock.items():
@@ -1734,3 +1842,87 @@ def get_rt_ticker(symbol, num=500, host='127.0.0.1', port=11111):
         if ret != RET_OK:
             raise RuntimeError(f"Futu get_rt_ticker失败: {data}")
         return data
+
+def batch_plate_market_snapshot(symbols, quote_ctx=None):
+    """
+    批量查询板块行情快照，专门为板块代码设计
+    
+    Args:
+        symbols: 板块代码列表，如 ['HK.BK1110', 'HK.BK1111']
+        quote_ctx: 行情上下文，如果为None则自动创建
+        
+    Returns:
+        dict: 板块行情数据字典
+    """
+    from futu import OpenQuoteContext, RET_OK
+    
+    results = {}
+    
+    def normalize_plate_symbol(s):
+        """专门处理板块代码格式"""
+        if '.' in s:
+            parts = s.split('.')
+            if len(parts) == 2:
+                market, code = parts
+                market = market.upper()
+                # 板块代码保持原有格式，不做额外处理
+                return f"{market}.{code}"
+            else:
+                return s
+        else:
+            return s
+    
+    if quote_ctx is not None:
+        norm_syms = [normalize_plate_symbol(s) for s in symbols]
+        print(f"[DEBUG] 板块原始代码: {symbols}")
+        print(f"[DEBUG] 板块转换后代码: {norm_syms}")
+        
+        market_groups = {}
+        for s in norm_syms:
+            parts = s.split('.')
+            if len(parts) != 2:
+                continue
+            market = parts[0].upper()
+            market_groups.setdefault(market, []).append(s)
+        
+        print(f"[DEBUG] 板块市场分组: {market_groups}")
+        
+        for market, syms in market_groups.items():
+            for i in range(0, len(syms), 20):
+                batch = syms[i:i+20]
+                print(f"[DEBUG] 板块查询批次: {batch}")
+                
+                ret, data = quote_ctx.get_market_snapshot(batch)
+                print(f"[DEBUG] 板块返回状态: {ret}, 数据类型: {type(data)}")
+                
+                if ret == RET_OK and data is not None and not data.empty:
+                    print(f"[DEBUG] 板块数据行数: {len(data)}")
+                    for idx, row in data.iterrows():
+                        results[row['code']] = row.to_dict()
+                else:
+                    print(f"[DEBUG] 板块数据为空或API调用失败: {data}")
+        
+        return results
+    
+    # 否则每次新建并自动关闭
+    with OpenQuoteContext(host='127.0.0.1', port=11111) as ctx:
+        norm_syms = [normalize_plate_symbol(s) for s in symbols]
+        market_groups = {}
+        
+        for s in norm_syms:
+            parts = s.split('.')
+            if len(parts) != 2:
+                continue
+            market = parts[0].upper()
+            market_groups.setdefault(market, []).append(s)
+        
+        for market, syms in market_groups.items():
+            for i in range(0, len(syms), 20):
+                batch = syms[i:i+20]
+                ret, data = ctx.get_market_snapshot(batch)
+                
+                if ret == RET_OK and data is not None and not data.empty:
+                    for idx, row in data.iterrows():
+                        results[row['code']] = row.to_dict()
+        
+        return results
