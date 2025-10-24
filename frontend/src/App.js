@@ -1,5 +1,4 @@
 import React from 'react';
-import Dashboard from './pages/Dashboard';
 import Watchlist from './pages/Watchlist';
 import ShareNote from './pages/ShareNote';
 import 'antd/dist/reset.css';
@@ -9,7 +8,7 @@ function App() {
   return (
     <Router>
       <Routes>
-        <Route path="/" element={<Dashboard />} />
+        <Route path="/" element={<Watchlist />} />
         <Route path="/watchlist" element={<Watchlist />} />
         <Route path="/share/note/:noteId" element={<ShareNote />} />
       </Routes>
