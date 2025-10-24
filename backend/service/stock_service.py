@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 import json
 import numpy as np
 import traceback
-from futu import RET_OK, KLType, AuType, PeriodType
+from futu import RET_OK, KLType, AuType, PeriodType, Market, Plate
 from futu.common.constant import OptionType, SecurityType
 import akshare as ak
 import os
@@ -18,6 +18,303 @@ logger = logging.getLogger(__name__)
 
 # 迁移自 app.py
 # 依赖注入: quote_ctx, batch_market_snapshot, get_stock_news, analyze_fundamental 等需在app.py中传入或全局导入
+
+def get_plate_ranking(market, plate_class, futu_client, batch_market_snapshot):
+    """
+    获取板块行情排名
+    
+    Args:
+        market: 市场标识，如 'HK', 'US', 'SH', 'SZ'
+        plate_class: 板块分类，如 'CONCEPT', 'INDUSTRY', 'REGION', 'OTHER'
+        futu_client: FutuClient实例
+        batch_market_snapshot: 批量查询行情快照函数
+        
+    Returns:
+        dict: 板块排名结果
+    """
+    try:
+        logger.info(f"开始获取{market}市场{plate_class}板块排名")
+        
+        # 1. 查询市场下所有的板块
+        market_map = {
+            'HK': Market.HK,
+            'US': Market.US,
+            'SH': Market.SH,
+            'SZ': Market.SZ
+        }
+        
+        plate_map = {
+            'CONCEPT': Plate.CONCEPT,
+            'INDUSTRY': Plate.INDUSTRY,
+            'REGION': Plate.REGION,
+            'OTHER': Plate.OTHER
+        }
+        
+        if market not in market_map:
+            raise Exception(f"不支持的市场类型: {market}")
+        
+        if plate_class not in plate_map:
+            raise Exception(f"不支持的板块分类: {plate_class}")
+        
+        futu_market = market_map[market]
+        futu_plate_class = plate_map[plate_class]
+        
+        # 获取板块列表
+        plates = futu_client.get_plate_list(futu_market, futu_plate_class)
+        logger.info(f"获取到{len(plates)}个板块")
+        
+        if not plates:
+            return {
+                'success': False,
+                'error': f'未获取到{market}市场{plate_class}板块数据'
+            }
+        
+        # 2. 批量查询板块对应的行情快照
+        plate_codes = [plate['code'] for plate in plates]
+        logger.info(f"开始批量查询{len(plate_codes)}个板块的行情快照")
+        
+        # 使用专门的板块行情查询函数
+        try:
+            from quant import batch_plate_market_snapshot
+            all_snapshots = batch_plate_market_snapshot(plate_codes)
+            logger.info(f"板块行情查询完成: {len(all_snapshots)}个板块")
+        except Exception as e:
+            logger.error(f"板块行情查询失败: {e}")
+            all_snapshots = {}
+        
+        # 3. 处理行情数据并计算涨跌幅
+        plate_rankings = []
+        
+        for plate in plates:
+            plate_code = plate['code']
+            plate_name = plate['plate_name']
+            
+            # 直接使用原始代码查找行情数据
+            if plate_code in all_snapshots:
+                snapshot = all_snapshots[plate_code]
+                
+                try:
+                    # 计算涨跌幅
+                    current_price = float(snapshot.get('last_price', 0))
+                    prev_close = float(snapshot.get('prev_close_price', 0))
+                    
+                    if prev_close > 0:
+                        change_percent = ((current_price - prev_close) / prev_close) * 100
+                    else:
+                        change_percent = 0
+                    
+                    # 构建板块排名数据
+                    plate_data = {
+                        'plate_code': plate_code,
+                        'plate_name': plate_name,
+                        'current_price': current_price,
+                        'prev_close': prev_close,
+                        'change': current_price - prev_close,
+                        'change_percent': round(change_percent, 2),
+                        'volume': int(snapshot.get('volume', 0)),
+                        'turnover': float(snapshot.get('turnover', 0)),
+                        'update_time': snapshot.get('update_time', ''),
+                        'market': market,
+                        'plate_class': plate_class
+                    }
+                    
+                    plate_rankings.append(plate_data)
+                    
+                except Exception as e:
+                    logger.error(f"处理板块{plate_code}数据失败: {e}")
+                    continue
+            else:
+                logger.warning(f"未获取到板块{plate_code}的行情数据")
+                # 检查代码是否在查询列表中
+                if plate_code in plate_codes:
+                    logger.warning(f"  代码 {plate_code} 在查询列表中，但未返回数据")
+                else:
+                    logger.warning(f"  代码 {plate_code} 不在查询列表中")
+        
+        # 4. 按照涨跌幅排序
+        plate_rankings.sort(key=lambda x: x['change_percent'], reverse=True)
+        
+        # 5. 记录到文件
+        save_plate_ranking_to_file(market, plate_class, plate_rankings)
+        
+        # 6. 返回排序结果
+        return {
+            'success': True,
+            'market': market,
+            'plate_class': plate_class,
+            'total_count': len(plates),
+            'valid_count': len(plate_rankings),
+            'rankings': plate_rankings,
+            'update_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+    except Exception as e:
+        logger.error(f"获取板块排名失败: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {
+            'success': False,
+            'error': f'获取板块排名失败: {str(e)}'
+        }
+
+def save_plate_ranking_to_file(market, plate_class, plate_rankings):
+    """
+    将板块排名数据保存到文件
+    
+    Args:
+        market: 市场标识
+        plate_class: 板块分类
+        plate_rankings: 板块排名数据
+    """
+    try:
+        # 创建数据目录
+        data_dir = os.path.join(os.path.dirname(__file__), '..', 'data', 'plate_rankings')
+        os.makedirs(data_dir, exist_ok=True)
+        
+        # 生成文件名：按日期和板块类型命名
+        today = datetime.now().strftime('%Y%m%d')
+        filename = f"{market}_{plate_class}_{today}.json"
+        filepath = os.path.join(data_dir, filename)
+        
+        # 构建保存数据
+        save_data = {
+            'market': market,
+            'plate_class': plate_class,
+            'date': today,
+            'update_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'total_count': len(plate_rankings),
+            'rankings': plate_rankings
+        }
+        
+        # 保存到文件
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(save_data, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"板块排名数据已保存到: {filepath}")
+        
+    except Exception as e:
+        logger.error(f"保存板块排名数据失败: {str(e)}")
+        logger.error(traceback.format_exc())
+
+def get_plate_ranking_history(market, plate_class, date=None):
+    """
+    获取历史板块排名数据
+    
+    Args:
+        market: 市场标识
+        plate_class: 板块分类
+        date: 日期，格式为YYYYMMDD，如果为None则获取最新数据
+        
+    Returns:
+        dict: 历史排名数据
+    """
+    try:
+        # 构建数据目录路径
+        data_dir = os.path.join(os.path.dirname(__file__), '..', 'data', 'plate_rankings')
+        
+        if not os.path.exists(data_dir):
+            return {
+                'success': False,
+                'error': '历史数据目录不存在'
+            }
+        
+        # 如果未指定日期，获取最新数据
+        if date is None:
+            # 查找最新的文件
+            files = [f for f in os.listdir(data_dir) 
+                    if f.startswith(f"{market}_{plate_class}_") and f.endswith('.json')]
+            
+            if not files:
+                return {
+                    'success': False,
+                    'error': f'未找到{market}市场{plate_class}板块的历史数据'
+                }
+            
+            # 按文件名排序，获取最新的
+            files.sort(reverse=True)
+            filename = files[0]
+            date = filename.split('_')[2].split('.')[0]
+        else:
+            filename = f"{market}_{plate_class}_{date}.json"
+        
+        filepath = os.path.join(data_dir, filename)
+        
+        if not os.path.exists(filepath):
+            return {
+                'success': False,
+                'error': f'未找到{date}的板块排名数据'
+            }
+        
+        # 读取文件数据
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        return {
+            'success': True,
+            'data': data
+        }
+        
+    except Exception as e:
+        logger.error(f"获取历史板块排名数据失败: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {
+            'success': False,
+            'error': f'获取历史板块排名数据失败: {str(e)}'
+        }
+
+def get_all_markets_plate_rankings(futu_client, batch_market_snapshot):
+    """
+    获取所有市场的板块排名
+    
+    Args:
+        futu_client: FutuClient实例
+        batch_market_snapshot: 批量查询行情快照函数
+        
+    Returns:
+        dict: 所有市场的板块排名结果
+    """
+    try:
+        logger.info("开始获取所有市场的板块排名")
+        
+        # 定义市场和板块类型
+        markets = ['HK', 'US', 'SH', 'SZ']
+        plate_classes = ['CONCEPT', 'INDUSTRY']
+        
+        all_rankings = {}
+        
+        for market in markets:
+            all_rankings[market] = {}
+            
+            for plate_class in plate_classes:
+                try:
+                    logger.info(f"获取{market}市场{plate_class}板块排名")
+                    result = get_plate_ranking(market, plate_class, futu_client, batch_market_snapshot)
+                    all_rankings[market][plate_class] = result
+                    
+                    if result['success']:
+                        logger.info(f"{market}市场{plate_class}板块排名获取成功: {result['valid_count']}个板块")
+                    else:
+                        logger.error(f"{market}市场{plate_class}板块排名获取失败: {result.get('error', '未知错误')}")
+                        
+                except Exception as e:
+                    logger.error(f"获取{market}市场{plate_class}板块排名异常: {e}")
+                    all_rankings[market][plate_class] = {
+                        'success': False,
+                        'error': f'获取失败: {str(e)}'
+                    }
+        
+        return {
+            'success': True,
+            'rankings': all_rankings,
+            'update_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+    except Exception as e:
+        logger.error(f"获取所有市场板块排名失败: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {
+            'success': False,
+            'error': f'获取所有市场板块排名失败: {str(e)}'
+        }
 
 # 1. K线数据
 
