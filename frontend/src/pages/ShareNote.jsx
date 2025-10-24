@@ -182,7 +182,7 @@ const ShareNote = () => {
             <Button
               type="primary"
               icon={<ArrowLeftOutlined />}
-              onClick={() => navigate('/')}
+              onClick={() => navigate('/watchlist')}
               style={{
                 background: '#722ed1',
                 border: 'none',
@@ -224,7 +224,7 @@ const ShareNote = () => {
             <Button
               type="primary"
               icon={<ArrowLeftOutlined />}
-              onClick={() => navigate('/')}
+              onClick={() => navigate('/watchlist')}
               style={{
                 background: '#722ed1',
                 border: 'none',
@@ -275,7 +275,7 @@ const ShareNote = () => {
         <Button
           type="text"
           icon={<ArrowLeftOutlined />}
-          onClick={() => navigate('/')}
+          onClick={() => navigate('/watchlist')}
           style={{
             color: '#b0bec5',
             fontSize: 16,
@@ -630,10 +630,7 @@ const ShareNote = () => {
                   color: '#fff',
                   borderRadius: 8
                 }}
-                dropdownStyle={{
-                  background: '#181c24',
-                  border: '1px solid #313a4d'
-                }}
+                styles={{ popup: { root: { background: '#181c24', border: '1px solid #313a4d' } } }}
               >
                 <Option value="基本面分析">基本面分析</Option>
                 <Option value="智能诊断">智能诊断</Option>
@@ -691,10 +688,7 @@ const ShareNote = () => {
                   color: '#fff',
                   borderRadius: 8
                 }}
-                dropdownStyle={{
-                  background: '#181c24',
-                  border: '1px solid #313a4d'
-                }}
+                styles={{ popup: { root: { background: '#181c24', border: '1px solid #313a4d' } } }}
               >
                 <Option value="买入">买入</Option>
                 <Option value="卖出">卖出</Option>
@@ -816,10 +810,7 @@ const ShareNote = () => {
                 color: '#fff',
                 borderRadius: 8
               }}
-              dropdownStyle={{
-                background: '#181c24',
-                border: '1px solid #313a4d'
-              }}
+              styles={{ popup: { root: { background: '#181c24', border: '1px solid #313a4d' } } }}
             />
           </Form.Item>
 
