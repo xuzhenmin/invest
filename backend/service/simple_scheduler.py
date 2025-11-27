@@ -295,14 +295,14 @@ class SimpleQuantScheduler:
                     for stock_symbol in stocks:
                         try:
                             logger.info(f"🔍 [DIAGNOSIS] 诊断股票: {stock_symbol} (用户{user_id})")
-                            # diagnosis_result = diagnosis_service.get_individual_diagnosis(stock_symbol)
+                            diagnosis_result = diagnosis_service.get_individual_diagnosis(stock_symbol)
                             
-                            # if diagnosis_result and diagnosis_result.get('status') == 'success':
-                            #     diagnosis_results.append(diagnosis_result)
-                            #     generated_reports += 1
-                            #     logger.info(f"✅ [DIAGNOSIS] 诊断完成: {stock_symbol}")
-                            # else:
-                            #     logger.warning(f"⚠️ [DIAGNOSIS] 诊断失败: {stock_symbol}")
+                            if diagnosis_result:
+                                diagnosis_results.append(diagnosis_result)
+                                generated_reports += 1
+                                logger.info(f"✅ [DIAGNOSIS] 诊断完成: {stock_symbol}")
+                            else:
+                                logger.warning(f"⚠️ [DIAGNOSIS] 诊断失败: {stock_symbol}")
                                 
                         except Exception as e:
                             logger.error(f"❌ [DIAGNOSIS] 诊断异常 {stock_symbol}: {str(e)}")
