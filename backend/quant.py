@@ -119,202 +119,256 @@ def get_stock_financials(symbol):
 def quant_get_stock_kline(symbol, start, end):
     """
     查询股票历史K线（日线），并计算EMA5/10/12/20/26/30/60/120
+    优先使用FUTU接口获取数据，失败时使用akshare作为兜底方案
     symbol: 股票代码，形如 '600519.SH', '00700.HK', 'AAPL.US'
     start, end: 'YYYY-MM-DD'
     返回 pandas.DataFrame
     """
-    # 添加调试日志，打印入参
+    import logging
+    from datetime import datetime, timedelta
+    from futu import OpenQuoteContext, RET_OK, KLType, AuType
+    
     logger.info(f"[quant_get_stock_kline] 入参: symbol={symbol}, start={start}, end={end}")
     
-    if symbol.endswith('.SZ') or symbol.endswith('.SH'):
-        stock_code = symbol.split('.')[0]
-        ak_start_date = start.replace('-', '')
-        ak_end_date = end.replace('-', '')
-        df = ak.stock_zh_a_hist(symbol=stock_code, period="daily", start_date=ak_start_date, end_date=ak_end_date, adjust="qfq")
-        df = df.rename(columns={
-            '日期': 'time_key', '开盘': 'open', '收盘': 'close', '最高': 'high', '最低': 'low', '成交量': 'volume'
-        })
-    elif symbol.endswith('.HK'):
-        stock_code = symbol.split('.')[0]
-        
-        # 优先使用Futu接口查询港股K线
-        df = None
+    def _get_futu_kline(symbol_code, market, start_date, end_date):
+        """使用FUTU接口获取K线数据"""
         try:
-            from futu import OpenQuoteContext, RET_OK, KLType, AuType, SubType
-            
-            # 创建Futu连接
-            quote_ctx = OpenQuoteContext(host='127.0.0.1', port=11111)
-            
-            # 订阅港股K线
-            futu_symbol = f"HK.{stock_code}"
-            ret_sub, err_message = quote_ctx.subscribe([futu_symbol], [SubType.K_DAY], subscribe_push=False)
-            
-            if ret_sub == RET_OK:
-                # 计算需要的K线数量（根据时间范围估算，最多1000根）
-                from datetime import datetime, timedelta
-                start_date = datetime.strptime(start, '%Y-%m-%d')
-                end_date = datetime.strptime(end, '%Y-%m-%d')
-                days_diff = (end_date - start_date).days
-                num_klines = min(days_diff + 30, 1000)  # 多取30天作为缓冲，最多1000根
+            with OpenQuoteContext(host='127.0.0.1', port=11111) as quote_ctx:
+                # 构建FUTU股票代码
+                if market.upper() == 'HK':
+                    futu_symbol = f"HK.{symbol_code.zfill(5)}"
+                elif market.upper() == 'US':
+                    futu_symbol = f"US.{symbol_code}"
+                elif market.upper() in ['SH', 'SZ']:
+                    futu_symbol = f"SH.{symbol_code}" if market.upper() == 'SH' else f"SZ.{symbol_code}"
+                else:
+                    return None
                 
-                # 添加港股Futu API调用的详细调试日志
-                logger.info(f"[quant_get_stock_kline] 港股Futu API调用参数: futu_symbol={futu_symbol}, num_klines={num_klines}, start_date={start_date}, end_date={end_date}, days_diff={days_diff}")
+                logger.info(f"[quant_get_stock_kline] FUTU API调用: {futu_symbol}")
                 
-                # 获取实时K线数据
-                ret, data = quote_ctx.get_cur_kline(futu_symbol, num_klines, KLType.K_DAY, AuType.QFQ)
+                # 获取历史K线数据 - 修复返回值解包问题
+                ret, data, page_req_key = quote_ctx.request_history_kline(
+                    futu_symbol, 
+                    start=start_date, 
+                    end=end_date, 
+                    ktype=KLType.K_DAY, 
+                    autype=AuType.QFQ
+                )
                 
-                # 添加Futu API返回结果的调试日志
-                logger.info(f"[quant_get_stock_kline] Futu API返回: ret={ret}, data_shape={data.shape if data is not None and hasattr(data, 'shape') else 'None'}, data_columns={list(data.columns) if data is not None and hasattr(data, 'columns') else 'None'}")
-                
-                if ret == RET_OK and not data.empty:
-                    # 转换Futu数据格式为标准格式
-                    df = data.copy()
-                    
-                    # 重命名列名以匹配标准格式
+                if ret == RET_OK and data is not None and not data.empty:
+                    # 转换列名格式
                     column_mapping = {
                         'time_key': 'time_key',
                         'open': 'open',
-                        'close': 'close', 
+                        'close': 'close',
                         'high': 'high',
                         'low': 'low',
                         'volume': 'volume'
                     }
                     
-                    # 只保留需要的列
-                    available_columns = [col for col in column_mapping.keys() if col in df.columns]
-                    df = df[available_columns]
-                    
-                    # 重命名列
-                    df = df.rename(columns=column_mapping)
-                    
-                    # 添加调试日志，打印重命名后的df
-                    logger.info(f"[quant_get_stock_kline] Futu API重命名后的df: shape={df.shape}, columns={list(df.columns)}, head={df.head().to_dict('records') if not df.empty else 'Empty DataFrame'}")
-                    
+                    # 只保留需要的列并重命名
+                    available_cols = [col for col in column_mapping.keys() if col in data.columns]
+                    if available_cols:
+                        df = data[available_cols].copy()
+                        df = df.rename(columns={col: column_mapping[col] for col in available_cols})
+                        df['time_key'] = pd.to_datetime(df['time_key']).dt.date.astype(str)
+                        
+                        # 过滤时间范围
+                        df = df[(df['time_key'] >= start_date) & (df['time_key'] <= end_date)]
+                        
+                        logger.info(f"[quant_get_stock_kline] FUTU API成功: {futu_symbol}, 数据量={len(df)}")
+                        return df
                 else:
-                    df = None
-            else:
-                df = None
-                
+                    logger.warning(f"[quant_get_stock_kline] FUTU API失败: {futu_symbol}, ret={ret}, data={data}")
+                    return None
+                    
         except Exception as e:
-            df = None
-        finally:
-            # 关闭Futu连接
-            try:
-                if 'quote_ctx' in locals():
-                    quote_ctx.close()
-            except:
-                pass
-        
-        # 如果Futu接口失败，使用Akshare兜底
-        if df is None or df.empty:
-            df = ak.stock_hk_daily(symbol=stock_code)
-        # 兼容不同数据源的列名
-        if '日期' in df.columns:
-            df = df.rename(columns={
-                '日期': 'time_key', '开盘价': 'open', '收盘价': 'close', '最高价': 'high', '最低价': 'low', '成交量': 'volume'
-            })
-        elif 'date' in df.columns:
-            df = df.rename(columns={
-                'date': 'time_key', 'open': 'open', 'close': 'close', 'high': 'high', 'low': 'low', 'volume': 'volume'
-            })
-        # 如果还没有 time_key，尝试用 index
-        if 'time_key' not in df.columns and df.index.name in ['date', '日期']:
-            df = df.reset_index().rename(columns={df.index.name: 'time_key'})
-        if 'time_key' not in df.columns:
-            raise ValueError('港股K线数据缺少日期列，无法分析')
-        # 修复：先转为字符串再过滤，避免类型不匹配
-        df['time_key'] = df['time_key'].astype(str)
-        # 港股Futu接口返回的数据可能包含end+1的数据，需要过滤到用户请求的end日期
-        df = df[(df['time_key'] >= start) & (df['time_key'] <= end)]
-        
-        # 添加数据过滤后的调试日志
-        logger.info(f"[quant_get_stock_kline] 港股数据过滤后: 过滤前数据量={len(df) if 'df' in locals() and df is not None else 0}, 过滤后数据量={len(df)}, 过滤条件: start={start}, end={end}")
-        if df is not None and not df.empty:
-            logger.info(f"[quant_get_stock_kline] 港股数据时间范围: 最早={df['time_key'].min()}, 最晚={df['time_key'].max()}")
-    elif symbol.endswith('.US'):
-        stock_code = symbol.split('.')[0]
-        df = ak.stock_us_daily(symbol=stock_code)
-        df = df.rename(columns={
-            '日期': 'time_key', '开盘': 'open', '收盘': 'close', '最高': 'high', '最低': 'low', '成交量': 'volume'
-        })
-        # 修复：先转为字符串再过滤，避免类型不匹配
-        df['time_key'] = df['time_key'].astype(str)
-        df = df[(df['time_key'] >= start) & (df['time_key'] <= end)]
-    else:
-        raise ValueError(f"不支持的symbol格式: {symbol}")
-    df['time_key'] = pd.to_datetime(df['time_key']).dt.date.astype(str)
-    df = df.sort_values('time_key')
-    for span in [5, 10, 12, 20, 26, 30, 60, 120]:
-        df[f'EMA{span}'] = df['close'].ewm(span=span, adjust=False).mean()
+            logger.error(f"[quant_get_stock_kline] FUTU接口异常: {e}")
+            return None
     
-    return df
+    def _get_akshare_kline(symbol_code, market, start_date, end_date):
+        """使用akshare接口获取K线数据"""
+        try:
+            ak_start = start_date.replace('-', '')
+            ak_end = end_date.replace('-', '')
+            
+            if market.upper() in ['SH', 'SZ']:
+                df = ak.stock_zh_a_hist(
+                    symbol=symbol_code, 
+                    period="daily", 
+                    start_date=ak_start, 
+                    end_date=ak_end, 
+                    adjust="qfq"
+                )
+                if not df.empty:
+                    df = df.rename(columns={
+                        '日期': 'time_key', '开盘': 'open', '收盘': 'close', 
+                        '最高': 'high', '最低': 'low', '成交量': 'volume'
+                    })
+            elif market.upper() == 'HK':
+                df = ak.stock_hk_daily(symbol=symbol_code)
+                if not df.empty:
+                    # 处理不同的列名格式
+                    column_mapping = {}
+                    if '日期' in df.columns:
+                        column_mapping['日期'] = 'time_key'
+                    if '开盘价' in df.columns:
+                        column_mapping['开盘价'] = 'open'
+                    elif 'open' in df.columns:
+                        column_mapping['open'] = 'open'
+                    if '收盘价' in df.columns:
+                        column_mapping['收盘价'] = 'close'
+                    elif 'close' in df.columns:
+                        column_mapping['close'] = 'close'
+                    if '最高价' in df.columns:
+                        column_mapping['最高价'] = 'high'
+                    elif 'high' in df.columns:
+                        column_mapping['high'] = 'high'
+                    if '最低价' in df.columns:
+                        column_mapping['最低价'] = 'low'
+                    elif 'low' in df.columns:
+                        column_mapping['low'] = 'low'
+                    if '成交量' in df.columns:
+                        column_mapping['成交量'] = 'volume'
+                    elif 'volume' in df.columns:
+                        column_mapping['volume'] = 'volume'
+                    
+                    df = df.rename(columns=column_mapping)
+            elif market.upper() == 'US':
+                df = ak.stock_us_daily(symbol=symbol_code)
+                if not df.empty:
+                    # 处理不同的列名格式
+                    column_mapping = {}
+                    if '日期' in df.columns:
+                        column_mapping['日期'] = 'time_key'
+                    elif 'date' in df.columns:
+                        column_mapping['date'] = 'time_key'
+                    if '开盘' in df.columns:
+                        column_mapping['开盘'] = 'open'
+                    elif 'open' in df.columns:
+                        column_mapping['open'] = 'open'
+                    if '收盘' in df.columns:
+                        column_mapping['收盘'] = 'close'
+                    elif 'close' in df.columns:
+                        column_mapping['close'] = 'close'
+                    if '最高' in df.columns:
+                        column_mapping['最高'] = 'high'
+                    elif 'high' in df.columns:
+                        column_mapping['high'] = 'high'
+                    if '最低' in df.columns:
+                        column_mapping['最低'] = 'low'
+                    elif 'low' in df.columns:
+                        column_mapping['low'] = 'low'
+                    if '成交量' in df.columns:
+                        column_mapping['成交量'] = 'volume'
+                    elif 'volume' in df.columns:
+                        column_mapping['volume'] = 'volume'
+                    
+                    df = df.rename(columns=column_mapping)
+            else:
+                return None
+            
+            if not df.empty:
+                # 确保time_key列存在
+                if 'time_key' not in df.columns:
+                    # 尝试使用索引作为时间列
+                    if df.index.name and df.index.name in ['date', '日期']:
+                        df = df.reset_index()
+                        df = df.rename(columns={df.columns[0]: 'time_key'})
+                    else:
+                        # 使用第一列作为时间列
+                        df = df.reset_index()
+                        df = df.rename(columns={df.columns[0]: 'time_key'})
+                
+                # 统一时间格式并过滤
+                df['time_key'] = df['time_key'].astype(str)
+                df = df[(df['time_key'] >= start_date) & (df['time_key'] <= end_date)]
+                logger.info(f"[quant_get_stock_kline] akshare成功: {symbol_code}.{market}, 数据量={len(df)}")
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"[quant_get_stock_kline] akshare接口异常: {e}")
+            return None
+    
+    # 解析股票代码
+    try:
+        code_parts = symbol.split('.')
+        if len(code_parts) != 2:
+            raise ValueError(f"不支持的symbol格式: {symbol}")
+        
+        stock_code = code_parts[0]
+        market = code_parts[1].upper()
+        
+        # 步骤1: 优先使用FUTU接口
+        df = _get_futu_kline(stock_code, market, start, end)
+        
+        # 步骤2: FUTU接口失败时使用akshare兜底
+        if df is None or df.empty:
+            logger.info(f"[quant_get_stock_kline] FUTU接口失败，使用akshare兜底: {symbol}")
+            df = _get_akshare_kline(stock_code, market, start, end)
+        
+        # 步骤3: 检查数据有效性
+        if df is None or df.empty:
+            raise ValueError(f"无法获取股票K线数据: {symbol}")
+        
+        # 步骤4: 数据清洗和计算技术指标
+        df = df.sort_values('time_key').reset_index(drop=True)
+        
+        # 计算EMA指标
+        for span in [5, 10, 12, 20, 26, 30, 60, 120]:
+            if 'close' in df.columns and len(df) >= span:
+                df[f'EMA{span}'] = df['close'].ewm(span=span, adjust=False).mean()
+        
+        logger.info(f"[quant_get_stock_kline] 成功获取数据: {symbol}, 数据量={len(df)}, 时间范围={df['time_key'].min()}~{df['time_key'].max()}")
+        
+        return df
+        
+    except Exception as e:
+        logger.error(f"[quant_get_stock_kline] 获取K线数据失败: {symbol}, 错误: {e}")
+        raise
 
 def get_stock_news(symbol):
     """
-    参考 app.py 的 get_stock_news 路由实现，返回 DataFrame 格式的新闻列表。
+    统一获取股票新闻，沪深、港股、美股均使用爬虫服务获取新闻数据，不再使用akshare。
+    返回 DataFrame 格式的新闻列表。
     """
+    import time
+    start_time = time.time()
+    logger.info(f"[get_stock_news] 开始获取股票新闻 - symbol: {symbol}")
+    
     code_parts = symbol.split('.')
     if len(code_parts) != 2:
+        logger.error(f"[get_stock_news] 股票代码格式错误 - symbol: {symbol}")
         raise ValueError('股票代码格式错误')
     stock_code = code_parts[0]
     market = code_parts[1].upper()
+    logger.info(f"[get_stock_news] 解析股票代码 - stock_code: {stock_code}, market: {market}")
+    
     news_list = []
-    if market == 'SH' or market == 'SZ':
-        # 1. 公司公告
-        try:
-            stock_code_6 = stock_code.split('.')[0] if '.' in stock_code else stock_code
-            try:
-                notice_df = ak.stock_notice_report(symbol=stock_code_6)
-            except KeyError:
-                notice_df = pd.DataFrame()
-            if not notice_df.empty:
-                for _, row in notice_df.iterrows():
-                    news_list.append({
-                        'title': row['公告标题'] if '公告标题' in row else row.get('title', ''),
-                        'content': row['公告内容'] if '公告内容' in row else row.get('content', ''),
-                        'publish_time': str(row['公告日期'] if '公告日期' in row else row.get('date', '')),
-                        'source': '公司公告',
-                        'url': row['公告链接'] if '公告链接' in row else row.get('url', None)
-                    })
-        except Exception:
-            pass
-        # 2. 公司新闻
-        try:
-            news_df = ak.stock_news_em(symbol=stock_code)
-            if not news_df.empty:
-                for _, row in news_df.iterrows():
-                    news_list.append({
-                        'title': row['title'] if 'title' in row else row.get('新闻标题', ''),
-                        'content': row['content'] if 'content' in row else row.get('新闻内容', ''),
-                        'publish_time': str(row['time'] if 'time' in row else row.get('发布时间', '')),
-                        'source': row['source'] if 'source' in row else row.get('来源', '东方财富网'),
-                        'url': row['url'] if 'url' in row else row.get('链接', None)
-                    })
-        except Exception:
-            pass
-        # 3. 行业新闻
-        try:
-            stock_info = ak.stock_individual_info_em(symbol=stock_code)
-            if not stock_info.empty and '所属行业' in stock_info.columns:
-                industry = stock_info['所属行业'].iloc[0]
-                industry_news = ak.stock_news_industry(symbol=industry)
-                if not industry_news.empty:
-                    for _, row in industry_news.iterrows():
-                        news_list.append({
-                            'title': row['title'] if 'title' in row else row.get('新闻标题', ''),
-                            'content': row['content'] if 'content' in row else row.get('新闻内容', ''),
-                            'publish_time': str(row['time'] if 'time' in row else row.get('发布时间', '')),
-                            'source': '行业新闻',
-                            'url': row['url'] if 'url' in row else row.get('链接', None)
-                        })
-        except Exception:
-            pass
-    elif market == 'HK':
-        # 港股新闻 - 使用新的爬虫服务
-        try:
+    total_sources = 0
+    successful_sources = 0
+    
+    # 统一使用爬虫服务获取新闻，不再区分市场类型
+    try:
+        logger.info(f"[get_stock_news] 开始获取股票新闻 - stock_code: {stock_code}, market: {market}")
+        
+        # 根据市场类型调用相应的爬虫服务
+        if market in ['SH', 'SZ','HK']:
             from service.stock_crawler import get_hk_stock_news
             crawled_news = get_hk_stock_news(stock_code, max_news=20)
-            # 转换格式以匹配原有结构
+        elif market == 'US':
+            from service.stock_crawler import get_us_stock_news
+            crawled_news = get_us_stock_news(stock_code, max_news=20)
+        else:
+            logger.error(f"[get_stock_news] 不支持的市场类型 - market: {market}")
+            raise ValueError('不支持的市场类型')
+            
+        logger.info(f"[get_stock_news] 新闻爬虫获取成功 - 数据条数: {len(crawled_news)}")
+        
+        # 转换格式以匹配原有结构
+        if crawled_news:
+            successful_sources += 1
             for news in crawled_news:
                 news_list.append({
                     'title': news.get('title', ''),
@@ -323,75 +377,25 @@ def get_stock_news(symbol):
                     'source': news.get('source', '东方财富网'),
                     'url': news.get('url', None)
                 })
-        except Exception as e:
-            logger.error(f"[get_stock_news] 港股新闻爬取失败: {e}")
-            # 如果爬虫失败，尝试使用akshare作为备用
-            try:
-                news_df = ak.stock_hk_news_em(symbol=stock_code)
-                if not news_df.empty:
-                    for _, row in news_df.iterrows():
-                        news_list.append({
-                            'title': row['title'] if 'title' in row else row.get('新闻标题', ''),
-                            'content': row['content'] if 'content' in row else row.get('新闻内容', ''),
-                            'publish_time': str(row['time'] if 'time' in row else row.get('发布时间', '')),
-                            'source': row['source'] if 'source' in row else row.get('来源', ''),
-                            'url': row['url'] if 'url' in row else row.get('链接', None)
-                        })
-            except Exception:
-                pass
-        # 港股公告
-        try:
-            notice_df = ak.stock_hk_report_em(symbol=stock_code)
-            if not notice_df.empty:
-                for _, row in notice_df.iterrows():
-                    news_list.append({
-                        'title': row['title'] if 'title' in row else row.get('公告标题', ''),
-                        'content': row['content'] if 'content' in row else row.get('公告内容', ''),
-                        'publish_time': str(row['time'] if 'time' in row else row.get('公告日期', '')),
-                        'source': '公司公告',
-                        'url': row['url'] if 'url' in row else row.get('公告链接', None)
-                    })
-        except Exception:
-            pass
-        # 港股行业新闻
-        try:
-            stock_info = ak.stock_hk_spot_em()
-            if not stock_info.empty:
-                stock_row = stock_info[stock_info['代码'] == stock_code]
-                if not stock_row.empty and '所属行业' in stock_row.columns:
-                    industry = stock_row['所属行业'].iloc[0]
-                    industry_news = ak.stock_news_industry(symbol=industry)
-                    if not industry_news.empty:
-                        for _, row in industry_news.iterrows():
-                            news_list.append({
-                                'title': row['title'] if 'title' in row else row.get('新闻标题', ''),
-                                'content': row['content'] if 'content' in row else row.get('新闻内容', ''),
-                                'publish_time': str(row['time'] if 'time' in row else row.get('发布时间', '')),
-                                'source': '行业新闻',
-                                'url': row['url'] if 'url' in row else row.get('链接', None)
-                            })
-        except Exception:
-            pass
-    elif market == 'US':
-        try:
-            news_df = ak.stock_us_news(symbol=stock_code)
-            if not news_df.empty:
-                for _, row in news_df.iterrows():
-                    news_list.append({
-                        'title': row['title'] if 'title' in row else row.get('新闻标题', ''),
-                        'content': row['content'] if 'content' in row else row.get('新闻内容', ''),
-                        'publish_time': str(row['time'] if 'time' in row else row.get('发布时间', '')),
-                        'source': row['source'] if 'source' in row else row.get('来源', ''),
-                        'url': row['url'] if 'url' in row else row.get('链接', None)
-                    })
-        except Exception:
-            pass
-    else:
-        raise ValueError('不支持的市场类型')
+            logger.info(f"[get_stock_news] 新闻处理完成 - 新增新闻条数: {len(crawled_news)}")
+    except ImportError as e:
+        logger.error(f"[get_stock_news] 爬虫服务导入失败: {e}")
+        # 如果爬虫服务不可用，返回空列表
+        crawled_news = []
+    except Exception as e:
+        logger.error(f"[get_stock_news] 新闻获取失败: {e}")
+        crawled_news = []
+    
     # 按发布时间排序
     news_list = [n for n in news_list if n.get('publish_time')]
     news_list.sort(key=lambda x: x['publish_time'], reverse=True)
     news_list = news_list[:50]
+    
+    # 最终统计日志
+    end_time = time.time()
+    execution_time = round(end_time - start_time, 2)
+    logger.info(f"[get_stock_news] 新闻获取完成 - symbol: {symbol}, 总数据源: {total_sources}, 成功数据源: {successful_sources}, 最终新闻条数: {len(news_list)}, 执行时间: {execution_time}s")
+    
     return pd.DataFrame(news_list)
 
 def analyze_stock(symbol):
