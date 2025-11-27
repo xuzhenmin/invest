@@ -32,13 +32,23 @@ except ImportError:
 
 from service.stock_service import get_stock_data as svc_get_stock_data
 from service.user_trade_service import user_trade_service
+from service.quant_trading import get_stock_diagnosis, get_batch_diagnosis, get_user_trade_history
+from service.position_manager import update_user_positions, get_user_positions, get_user_position_details
+from service.storage.data_service import data_service
+
+try:
+    from service.simple_scheduler import start_simple_scheduler
+    SCHEDULER_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"定时任务模块导入失败: {str(e)}")
+    SCHEDULER_AVAILABLE = False
 
 # 配置日志
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+from utils.logger_config import setup_logging, get_logger
+
+# 设置日志配置
+setup_logging()
+logger = get_logger('app')
 
 # 加载 .env 文件中的环境变量
 env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
@@ -1798,207 +1808,17 @@ def diagnose_stock(symbol):
         logger.error(traceback.format_exc())
         return jsonify({'error': f'诊断失败: {str(e)}'}), 500
 
-SYSTEM_PROMPT_TEMPLATE = """
-作为一只专注于港股的量化交易AI，你的任务是根据提供的股票数据，给出专业的诊断分析报告。
-请严格按照以下JSON格式输出所有分析结果，不要包含任何多余的文本或Markdown围栏（如```json```）。确保JSON的完整性和正确性。
-分析结果必须包含以下所有字段：
-{
-  "technical_analysis": {
-    "ema_crosses": "详细描述各EMA交叉情况及其对短期、中期、长期趋势的影响，例如：EMA5上穿EMA10形成金叉，预示短期看涨；EMA20下穿EMA60形成死叉，可能预示长期趋势转弱。", // EMA交叉情况
-    "ema_trends": "详细描述各EMA线的近期走势及其对股价的指示作用，例如：EMA5、EMA10、EMA20均呈现多头排列，且向上发散，表明市场处于强势上涨趋势。", // 各EMA趋势
-    "price_ema_relation": "详细描述当前价格与各EMA线的相对位置，以及这些EMA线如何形成支撑或压力，例如：当前价格站稳EMA5之上，EMA5对股价形成短期支撑，而EMA60则构成长期压力位。", // 价格与EMA的关系
-    "trend_judgment": "详细的趋势判断，例如：短期震荡整理，中期趋势向上，长期维持牛市格局。"
-  },
-  "capital_flow_analysis": {
-    "30d_trend": "详细描述近半年资金的净流入/流出情况及其波动特征，例如：近半年累计净流入达到X亿元，资金活跃度较高，但近期波动有所增加。", // 近半年资金流向趋势
-    "main_capital": "详细描述主力资金的流向和强度，以及其对股价的潜在影响，例如：主力资金连续X日净流入，大单买入强度较高，显示主力资金看好后市，有望推动股价上涨。", // 主力资金动向
-    "strength_assessment": "对资金实力进行评估，例如：资金实力雄厚，有能力推动股价上涨。"
-  },
-  "capital_distribution_analysis": {
-    "main_capital_distribution": "详细描述主力资金的分布情况，例如：超级大户和大户资金占比约45%，近期呈现净流入状态。",
-    "retail_capital_distribution": "详细描述散户资金的分布情况，例如：散户资金占比约55%，近期流出压力较大，活跃度下降。",
-    "capital_structure": "对资金结构进行概括性描述，例如：主力资金与散户资金均较活跃，但近期散户资金流出明显。"
-  },
-  "investment_advice": "基于以上分析给出的投资建议，例如：短期建议观望等待趋势明朗，中长期可逢低布局，关注500元附近的支撑位。",
-  "risk_warning": "风险提示，例如：需警惕技术面短期调整风险，以及资金面主力资金持续流出的潜在风险。",
-  "overall_score": 0, // 综合评分，0-100
-  "technical_score": 0, // 技术面评分，0-100
-  "capital_score": 0, // 资金面评分，0-100
-  "score": {
-    "total_score": 0, // 综合评分，0-100
-    "grade": "A/B/C/D/F", // 综合评级
-    "technical_score": 0, // 技术面评分，0-100
-    "technical_grade": "A/B/C/D/F", // 技术面评级
-    "capital_score": 0, // 资金面评分，0-100
-    "capital_grade": "A/B/C/D/F" // 资金面评级
-  }
-}
-"""
-
 def analyze_with_deepseek(data):
     """
     使用DEEPSEEK分析股票数据
+    只处理简单的参数验证和调用业务服务
     """
     try:
-        # 提取相关数据用于构建提示
-        technical_data = data.get('technical_indicators', {})
-        capital_flow_data = data.get('capital_flow', {})
-
-        # 将相关数据转换为JSON字符串，以便嵌入到提示中
-        technical_json = json.dumps(technical_data, indent=2, ensure_ascii=False)
-        capital_flow_json = json.dumps(capital_flow_data, indent=2, ensure_ascii=False)
-
-        # 构建用户提示
-        user_prompt = f"""
-        请对股票 {data['symbol']} 进行全面的技术分析和资金面分析。以下是相关数据：
-
-        **技术指标数据 (最近30天):**
-        ```json
-        {technical_json}
-        ```
-
-        **资金流向和分布数据:**
-        ```json
-        {capital_flow_json}
-        ```
-
-        请根据以上数据，严格按照系统提示的JSON格式返回分析结果。特别注意：
-        1. 必须返回具体的数值评分（0-100的整数）
-        2. 必须返回具体的评级（A/B/C/D/F）
-        3. 所有评分和评级必须基于数据客观计算得出
-        """
+        # 调用业务服务进行DeepSeek分析
+        from service.stock_service import analyze_with_deepseek_service
+        result = analyze_with_deepseek_service(data)
         
-        messages = [
-            {'role': 'system', 'content': SYSTEM_PROMPT_TEMPLATE.strip()},
-            {'role': 'user', 'content': user_prompt.strip()}
-        ]
-
-        # 打印大模型输入日志
-        logger.info(f"DEEPSEEK Request - Messages: {json.dumps(messages, indent=2, ensure_ascii=False)}")
-
-        # 调用DEEPSEEK API
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {os.getenv("DEEPSEEK_API_KEY")}'
-        }
-        
-        response = requests.post(
-            'https://api.deepseek.com/v1/chat/completions',
-            headers=headers,
-            json={
-                'model': 'deepseek-chat',
-                'messages': messages,
-                'temperature': 0.7,
-                'max_tokens': 2000
-            }
-        )
-        
-        # 打印大模型原始输出日志
-        logger.info(f"DEEPSEEK Response - Status Code: {response.status_code}")
-        logger.info(f"DEEPSEEK Response - Text: {response.text}")
-
-        if response.status_code != 200:
-            raise Exception(f'DEEPSEEK API调用失败: {response.text}')
-            
-        result = response.json()
-        analysis_text = result['choices'][0]['message']['content']
-        
-        # 移除Markdown代码块围栏，确保是纯JSON
-        if analysis_text.startswith('```json') and analysis_text.endswith('```'):
-            analysis_text = analysis_text[7:-3].strip()
-        
-        # 再次尝试移除可能存在的其他Markdown代码块围栏
-        analysis_text = analysis_text.replace('```json', '').replace('```', '').strip()
-
-        # 解析返回的JSON文本
-        try:
-            analysis_data = json.loads(analysis_text)
-        except json.JSONDecodeError:
-            logger.error(f"Failed to decode JSON from DEEPSEEK API: {analysis_text}")
-            # 如果返回的不是有效的JSON，设置默认评分
-            analysis_data = {
-                'technical_analysis': analysis_text, 
-                'capital_flow_analysis': '无法解析资金流向分析',
-                'capital_distribution_analysis': '无法解析资金分布分析',
-                'score': {
-                    'total_score': 50,
-                    'grade': 'C',
-                    'technical_score': 50,
-                    'technical_grade': 'C',
-                    'capital_score': 50,
-                    'capital_grade': 'C'
-                },
-                'investment_advice': '请参考技术分析结果',
-                'risk_warning': '请注意投资风险'
-            }
-        
-        # 确保score字段存在且包含所有必要的子字段
-        if 'score' not in analysis_data:
-            analysis_data['score'] = {}
-        
-        # 设置默认评分和评级
-        default_scores = {
-            'total_score': 50,
-            'grade': 'C',
-            'technical_score': 50,
-            'technical_grade': 'C',
-            'capital_score': 50,
-            'capital_grade': 'C'
-        }
-        
-        # 确保所有评分字段都存在且为有效数值
-        for key, default_value in default_scores.items():
-            if key not in analysis_data['score'] or not isinstance(analysis_data['score'][key], (int, float)):
-                analysis_data['score'][key] = default_value
-                logger.warning(f"Missing or invalid score field: {key}, using default value: {default_value}")
-        
-        # 添加图表数据
-        analysis_data['charts_data'] = {
-            'technical': {
-                'dates': data['technical_indicators']['dates'],
-                'prices': data['technical_indicators']['prices'],
-                'ema5': data['technical_indicators']['ema']['ema5'],
-                'ema10': data['technical_indicators']['ema']['ema10'],
-                'ema20': data['technical_indicators']['ema']['ema20'],
-                'ema60': data['technical_indicators']['ema']['ema60']
-            },
-            'capital_flow': data['capital_flow'],
-            'capital_distribution': data['capital_flow']['distribution']
-        }
-        
-        # 验证返回的JSON结构，确保所有预期字段都存在
-        expected_fields = [
-            'technical_analysis',
-            'capital_flow_analysis',
-            'capital_distribution_analysis',
-            'score',
-            'investment_advice',
-            'risk_warning'
-        ]
-        
-        for field in expected_fields:
-            if field not in analysis_data:
-                logger.warning(f"DEEPSEEK response missing expected field: {field}. Filling with default value.")
-                if field == 'score':
-                    analysis_data[field] = default_scores
-                else:
-                    analysis_data[field] = {} if 'analysis' in field else ""
-
-        # 针对嵌套的分析字段，也做一次结构验证和填充
-        nested_analysis_fields = {
-            'technical_analysis': ['ema_crosses', 'ema_trends', 'price_ema_relation', 'trend_judgment'],
-            'capital_flow_analysis': ['30d_trend', 'main_capital', 'strength_assessment'],
-            'capital_distribution_analysis': ['main_capital_distribution', 'retail_capital_distribution', 'capital_structure']
-        }
-
-        for main_field, sub_fields in nested_analysis_fields.items():
-            if main_field in analysis_data and isinstance(analysis_data[main_field], dict):
-                for sub_field in sub_fields:
-                    if sub_field not in analysis_data[main_field]:
-                        logger.warning(f"DEEPSEEK response missing nested field: {main_field}.{sub_field}. Filling with default value.")
-                        analysis_data[main_field][sub_field] = ""
-
-        return analysis_data
+        return result
         
     except Exception as e:
         logger.error(f"DEEPSEEK分析错误: {str(e)}")
@@ -2022,175 +1842,27 @@ def analyze_with_deepseek(data):
 
 @app.route('/api/stock/<symbol>/news')
 def get_stock_news(symbol):
+    """
+    获取股票新闻接口
+    只处理简单的参数验证和调用业务服务
+    """
     try:
         # 解析股票代码和市场
         code_parts = symbol.split('.')
         if len(code_parts) != 2:
             return jsonify({'error': '股票代码格式错误'}), 400
             
-        stock_code = code_parts[0]
-        market = code_parts[1].upper()
+        # 调用业务服务获取新闻数据
+        from service.stock_service import get_stock_news_data
+        result = get_stock_news_data(symbol)
         
-        news_list = []
-        
-        # 检查是否为A股市场
-        if market == 'SH' or market == 'SZ':
-            try:
-                # 获取A股新闻
-                # 1. 获取公司公告
-                try:
-                    logger.info(f"正在获取A股公司公告，股票代码: {stock_code}")
-                    stock_code_6 = stock_code.split('.')[0] if '.' in stock_code else stock_code
-                    try:
-                        notice_df = ak.stock_notice_report(symbol=stock_code_6)
-                    except KeyError:
-                        logger.warning(f"akshare公告接口不支持该股票: {stock_code_6}")
-                        notice_df = pd.DataFrame()
-                    logger.info(f"A股公司公告返回数据列名: {notice_df.columns.tolist() if not notice_df.empty else 'Empty DataFrame'}")
-                    logger.info(f"A股公司公告返回数据示例: {notice_df.head(1).to_dict('records') if not notice_df.empty else 'No data'}")
-                    
-                    if not notice_df.empty:
-                        for _, row in notice_df.iterrows():
-                            news_list.append({
-                                'title': row['公告标题'] if '公告标题' in row else row['title'],
-                                'content': row['公告内容'] if '公告内容' in row else row['content'],
-                                'publish_time': str(row['公告日期'] if '公告日期' in row else row['date']),
-                                'source': '公司公告',
-                                'url': row['公告链接'] if '公告链接' in row else row['url'] if 'url' in row else None
-                            })
-                except Exception as e:
-                    logger.warning(f"获取A股公司公告失败: {str(e)}")
-                    logger.error(traceback.format_exc())
-                
-                # 2. 获取公司新闻
-                try:
-                    logger.info(f"正在获取A股公司新闻，股票代码: {stock_code}")
-                    news_df = ak.stock_news_em(symbol=stock_code)
-                    logger.info(f"A股公司新闻返回数据列名: {news_df.columns.tolist() if not news_df.empty else 'Empty DataFrame'}")
-                    logger.info(f"A股公司新闻返回数据示例: {news_df.head(1).to_dict('records') if not news_df.empty else 'No data'}")
-                    
-                    if not news_df.empty:
-                        for _, row in news_df.iterrows():
-                            news_list.append({
-                                'title': row['title'] if 'title' in row else row['新闻标题'],
-                                'content': row['content'] if 'content' in row else row['新闻内容'],
-                                'publish_time': str(row['time'] if 'time' in row else row['发布时间']),
-                                'source': row['source'] if 'source' in row else row['来源'] if '来源' in row else '东方财富网',
-                                'url': row['url'] if 'url' in row else row['链接'] if '链接' in row else None
-                            })
-                except Exception as e:
-                    logger.warning(f"获取A股公司新闻失败: {str(e)}")
-                    logger.error(traceback.format_exc())
-                
-                # 3. 获取行业新闻
-                try:
-                    logger.info(f"正在获取A股行业信息，股票代码: {stock_code}")
-                    stock_info = ak.stock_individual_info_em(symbol=stock_code)
-                    logger.info(f"A股行业信息返回数据列名: {stock_info.columns.tolist() if not stock_info.empty else 'Empty DataFrame'}")
-                    logger.info(f"A股行业信息返回数据示例: {stock_info.head(1).to_dict('records') if not stock_info.empty else 'No data'}")
-                    
-                    if not stock_info.empty and '所属行业' in stock_info.columns:
-                        industry = stock_info['所属行业'].iloc[0]
-                        logger.info(f"获取到行业: {industry}")
-                        
-                        industry_news = ak.stock_news_industry(symbol=industry)
-                        logger.info(f"行业新闻返回数据列名: {industry_news.columns.tolist() if not industry_news.empty else 'Empty DataFrame'}")
-                        logger.info(f"行业新闻返回数据示例: {industry_news.head(1).to_dict('records') if not industry_news.empty else 'No data'}")
-                        
-                        if not industry_news.empty:
-                            for _, row in industry_news.iterrows():
-                                news_list.append({
-                                    'title': row['title'] if 'title' in row else row['新闻标题'],
-                                    'content': row['content'] if 'content' in row else row['新闻内容'],
-                                    'publish_time': str(row['time'] if 'time' in row else row['发布时间']),
-                                    'source': '行业新闻',
-                                    'url': row['url'] if 'url' in row else row['链接']
-                                })
-                except Exception as e:
-                    logger.warning(f"获取A股行业新闻失败: {str(e)}")
-                    logger.error(traceback.format_exc())
-                
-            except Exception as e:
-                logger.error(f"获取A股新闻失败: {str(e)}")
-                logger.error(traceback.format_exc())
-                return jsonify({'error': f'获取A股新闻失败: {str(e)}'}), 500
-        
-        # 港股市场
-        elif market == 'HK':
-            try:
-                # 使用新的爬虫服务获取港股新闻
-                try:
-                    from service.stock_crawler import get_hk_stock_news
-                    logger.info(f"正在使用爬虫服务获取港股新闻: {stock_code}")
-                    crawled_news = get_hk_stock_news(stock_code, max_news=20)
-                    
-                    if crawled_news:
-                        for news in crawled_news:
-                            news_list.append({
-                                'title': news.get('title', ''),
-                                'content': news.get('content', ''),
-                                'publish_time': news.get('publish_time', ''),
-                                'source': news.get('source', '东方财富网'),
-                                'url': news.get('url', None)
-                            })
-                        logger.info(f"爬虫服务成功获取 {len(crawled_news)} 条港股新闻")
-                    else:
-                        logger.warning("爬虫服务未获取到港股新闻")
-                        
-                except Exception as e:
-                    logger.error(f"爬虫服务获取港股新闻失败: {str(e)}")
-                    logger.error(traceback.format_exc())
-                
-                # 如果爬虫失败，尝试使用akshare作为备用（虽然这些方法可能不存在）
-                if not news_list:
-                    try:
-                        logger.info("尝试使用akshare作为备用方案")
-                        # 尝试获取港股新闻（这些方法可能不存在）
-                        news_df = ak.stock_hk_news_em(symbol=stock_code)
-                        if not news_df.empty:
-                            for _, row in news_df.iterrows():
-                                news_list.append({
-                                    'title': row['title'] if 'title' in row else row['新闻标题'],
-                                    'content': row['content'] if 'content' in row else row['新闻内容'],
-                                    'publish_time': str(row['time'] if 'time' in row else row['发布时间']),
-                                    'source': row['source'] if 'source' in row else row['来源'],
-                                    'url': row['url'] if 'url' in row else row['链接']
-                                })
-                    except Exception as e:
-                        logger.warning(f"akshare港股新闻接口失败: {str(e)}")
-                    
-                    try:
-                        # 尝试获取港股公告（这些方法可能不存在）
-                        notice_df = ak.stock_hk_report_em(symbol=stock_code)
-                        if not notice_df.empty:
-                            for _, row in notice_df.iterrows():
-                                news_list.append({
-                                    'title': row['title'] if 'title' in row else row['公告标题'],
-                                    'content': row['content'] if 'content' in row else row['公告内容'],
-                                    'publish_time': str(row['time'] if 'time' in row else row['公告日期']),
-                                    'source': '公司公告',
-                                    'url': row['url'] if 'url' in row else row['公告链接'] if '公告链接' in row else None
-                                })
-                    except Exception as e:
-                        logger.warning(f"akshare港股公告接口失败: {str(e)}")
-                
-            except Exception as e:
-                logger.error(f"获取港股新闻失败: {str(e)}")
-                logger.error(traceback.format_exc())
-                return jsonify({'error': f'获取港股新闻失败: {str(e)}'}), 500
-        
-        else:
-            return jsonify({'error': '不支持的市场类型'}), 400
-        
-        # 按发布时间排序
-        news_list.sort(key=lambda x: x['publish_time'], reverse=True)
-        
-        # 限制返回最新的50条新闻
-        news_list = news_list[:50]
+        # 处理返回结果
+        if 'error' in result:
+            return jsonify({'error': result['error']}), result.get('status', 500)
         
         return jsonify({
-            'news': news_list,
-            'total': len(news_list)
+            'news': result['news'],
+            'total': result['total']
         })
         
     except Exception as e:
@@ -2521,9 +2193,36 @@ def save_monitor():
     user_id = data.get('userId', '')
     if not user_id:
         return jsonify({'error': 'userId必填'}), 400
+    
+    # 保存监控配置到文件
     all_data = load_monitor_config()
     all_data[user_id] = data
     save_monitor_config(all_data)
+    
+    # 从监控配置中提取量化股票列表和量化开启状态
+    try:
+        # 获取监控的股票列表
+        quant_stocks = data.get('stocks', [])
+        
+        # 获取量化交易开启状态
+        quant_enabled = data.get('quant_trading_enabled', False)
+        
+        # 调用数据服务更新用户量化设置
+        success = data_service.update_user_quant_settings(
+            user_id=user_id,
+            quant_enabled=quant_enabled,
+            quant_stocks=quant_stocks if quant_stocks else None
+        )
+        
+        if success:
+            logger.info(f"用户 {user_id} 的量化设置已更新：quant_enabled={quant_enabled}, quant_stocks={quant_stocks}")
+        else:
+            logger.warning(f"用户 {user_id} 的量化设置更新失败")
+            
+    except Exception as e:
+        logger.error(f"更新用户量化设置时出错: {str(e)}")
+        # 不返回错误，因为监控配置保存成功
+    
     return jsonify({'status': 'ok', 'msg': '监控配置已保存'})
 
 @app.route('/watchlist/query/monitor', methods=['GET'])
@@ -2533,300 +2232,32 @@ def query_monitor():
     data = all_data.get(user_id, {})
     return jsonify(data)
 
-@app.route('/watchlist/<rule>/execute', methods=['POST'])
+@app.route("/watchlist/<rule>/execute", methods=["POST"])
 def execute_watchlist_rule(rule):
-    data = request.get_json(force=True)
-    user_id = data.get('userId', '')
-    if not user_id:
-        return {'error': 'userId必填'}, 400
-    all_data = load_monitor_config()
-    user_conf = all_data.get(user_id)
-    if not user_conf:
-        return {'error': '未找到该用户配置'}, 404
-    stocks = user_conf.get('stocks', [])
-    if isinstance(stocks, str):
-        stocks = [s.strip() for s in stocks.split(',') if s.strip()]
-    rules = user_conf.get('rules', [])
-    if rule not in rules:
-        return {'error': f'用户未选择该规则: {rule}'}, 400
-    results = []
-    execute_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    monitor_status = load_monitor_status()
-    for symbol in stocks:
-        # 获取股票名称
-        name = symbol
-        try:
-            stock_info = get_stock_data(symbol)
-            if isinstance(stock_info, dict) and stock_info.get('name'):
-                name = stock_info['name']
-            elif hasattr(stock_info, 'json'):
-                stock_json = stock_info.json if not callable(stock_info.json) else stock_info.json()
-                if isinstance(stock_json, dict) and stock_json.get('name'):
-                    name = stock_json['name']
-        except Exception:
-            name = symbol
-        result_item = {
-            'stock': symbol,
-            'name': name,
-            'rule': rule,
-            'execute_time': execute_time,
-            'status': 'success',
-            'reason': '',
-            'market_data': None,
-            'extra': None,
-            'hit': False
-        }
-        # 获取最近交易日日期
-        trade_date = None
-        try:
-            snapshot = get_stock_data(symbol, as_dict=True)
-            trade_time = snapshot.get('update_time')
-            if trade_time:
-                trade_date = str(trade_time)[:10]
-            else:
-                kline = get_kline_data(symbol)
-                if kline and len(kline) > 0:
-                    last_time = kline[-1].get('time')
-                    if last_time:
-                        trade_date = str(last_time)[:10]
-        except Exception:
-            trade_date = datetime.now().strftime('%Y-%m-%d')
-        if rule == 'wave3_start':
-            try:
-                from quant import analyze_elliott_wave
-                result = analyze_elliott_wave(symbol)
-                # 直接用 is_wave3_start 字段作为 hit
-                hit = bool(result.get('is_wave3_start', False))
-                desc = result.get('desc') or result.get('description') or ''
-                main_wave = result.get('mainWave') or result.get('main_wave')
-                wave_signal = result.get('signal') or result.get('waveSignal')
-                detailed_reason = result.get('reason', '')
-                pattern_analysis = ''
-                if (wave_signal and '符合' in wave_signal) or ('符合' in desc):
-                    pattern_analysis = '符合三浪形态'
-                elif (wave_signal and '不符合' in wave_signal) or ('不符合' in desc):
-                    pattern_analysis = '不符合三浪形态'
-                result_item['hit'] = hit
-                result_item['reason'] = f"三浪信号: {'命中' if hit else '未命中'}，{desc}" if desc else ("三浪信号: 命中" if hit else "三浪信号: 未命中")
-                # 获取最新行情信息
-                try:
-                    kline = get_kline_data(symbol)
-                    if kline and len(kline) >= 2:
-                        pct = (kline[-1]['close'] - kline[-2]['close']) / kline[-2]['close'] * 100
-                        result_item['market_data'] = {
-                            'close': kline[-1]['close'],
-                            'pre_close': kline[-2]['close'],
-                            'pct_change': round(pct,2),
-                            'trigger_time': kline[-1]['time'] if 'time' in kline[-1] else None,
-                            'main_wave': main_wave,
-                            'wave_signal': wave_signal,
-                            'desc': desc
-                        }
-                    else:
-                        result_item['market_data'] = {
-                            'main_wave': main_wave,
-                            'wave_signal': wave_signal,
-                            'desc': desc
-                        }
-                except Exception:
-                    result_item['market_data'] = {
-                        'main_wave': main_wave,
-                        'wave_signal': wave_signal,
-                        'desc': desc
-                    }
-                # 形态分析补充信息
-                if not pattern_analysis:
-                    pattern_analysis = '符合三浪形态' if hit else '不符合三浪形态'
-                result_item['extra'] = {'形态分析': pattern_analysis, '详细分析': detailed_reason}
-            except Exception as e:
-                result_item['status'] = 'fail'
-                result_item['reason'] = str(e)
-                result_item['extra'] = {'原因': str(e)}
-        elif rule == 'down_channel_start':
-            try:
-                from quant import analyze_down_channel
-                result = analyze_down_channel(symbol, window=20)
-                hit = bool(result.get('is_down_channel', False))
-                reason = result.get('reason', '')
-                detail = result.get('detail', '')
-                kline = get_kline_data(symbol)
-                closes = [item['close'] for item in kline[-20:]] if kline and len(kline) >= 20 else []
-                # 获取最新快照
-                snapshot = get_stock_data(symbol, as_dict=True)
-                close = snapshot.get('current_price')
-                pre_close = snapshot.get('pre_close')
-                pct_change = round((close - pre_close) / pre_close * 100, 2) if close is not None and pre_close else None
-                result_item['hit'] = hit
-                result_item['reason'] = reason
-                result_item['market_data'] = {
-                    'close': close,
-                    'pre_close': pre_close,
-                    'pct_change': pct_change,
-                    'trigger_time': snapshot.get('update_time'),
-                    'min_close_20d': min(closes) if closes else None
-                }
-                result_item['extra'] = {'形态分析': '下降通道开启' if hit else '未形成下降通道', '详细分析': detail}
-            except Exception as e:
-                result_item['status'] = 'fail'
-                result_item['reason'] = str(e)
-                result_item['extra'] = {'原因': str(e)}
-        elif rule == 'pct_change_5':
-            try:
-                # 优化：直接用快照接口，不查K线
-                stock_info = get_stock_data(symbol, as_dict=True)
-                if isinstance(stock_info, dict):
-                    close = stock_info.get('current_price')
-                    pre_close = stock_info.get('pre_close')
-                elif hasattr(stock_info, 'json'):
-                    stock_json = stock_info.json if not callable(stock_info.json) else stock_info.json()
-                    close = stock_json.get('current_price')
-                    pre_close = stock_json.get('pre_close')
-                else:
-                    close = None
-                    pre_close = None
-                if close is not None and pre_close is not None and pre_close != 0:
-                    pct = (close - pre_close) / pre_close * 100
-                    hit = abs(pct) >= 5
-                    result_item['reason'] = f"涨跌幅: {round(pct,2)}%，{'命中' if hit else '未命中'}"
-                    result_item['market_data'] = {
-                        'close': close,
-                        'pre_close': pre_close,
-                        'pct_change': round(pct,2),
-                        'trigger_time': None
-                    }
-                    result_item['hit'] = hit
-                    result_item['extra'] = {
-                        '涨跌幅分析': f"最新价: {close}，前收: {pre_close}，涨跌幅: {round(pct,2)}%",
-                        '命中情况': '涨跌幅绝对值大于等于5%' if hit else '涨跌幅绝对值小于5%'
-                    }
-                else:
-                    result_item['status'] = 'fail'
-                    result_item['reason'] = '快照数据不足，无法计算涨跌幅'
-                    result_item['extra'] = {'涨跌幅分析': '快照数据不足，无法计算涨跌幅'}
-            except Exception as e:
-                logger.error(f"pct_change_5 rule error: {e}")
-                logger.error(traceback.format_exc())
-                result_item['status'] = 'fail'
-                result_item['reason'] = str(e)
-                result_item['extra'] = {'原因': str(e)}
-        elif rule == 'multi_factor_entry_exit':
-            try:
-                from quant import analyze_multi_factor_entry_exit
-                result = analyze_multi_factor_entry_exit(symbol)
-                hit = bool(result.get('is_entry', False))
-                reason = result.get('reason', '')
-                detail = result.get('detail', {})
-                # 获取最新快照
-                snapshot = get_stock_data(symbol, as_dict=True)
-                close = snapshot.get('current_price')
-                pre_close = snapshot.get('pre_close')
-                pct_change = round((close - pre_close) / pre_close * 100, 2) if close is not None and pre_close else None
-                result_item['hit'] = hit
-                result_item['reason'] = reason
-                result_item['market_data'] = {
-                    'close': close,
-                    'pre_close': pre_close,
-                    'pct_change': pct_change,
-                    'trigger_time': snapshot.get('update_time')
-                }
-                result_item['extra'] = detail
-            except Exception as e:
-                result_item['status'] = 'fail'
-                result_item['reason'] = str(e)
-                result_item['extra'] = {'原因': str(e)}
-        elif rule == 'undervalued_stock':
-            try:
-                from quant import analyze_undervalued_stock
-                result = analyze_undervalued_stock(symbol)
-                hit = bool(result.get('is_undervalued', False))
-                reason = result.get('reason', '')
-                valuation = result.get('valuation', '')
-                result_item['hit'] = hit
-                result_item['reason'] = reason
-                result_item['extra'] = {
-                    'valuation': valuation,
-                    'fundamental': result.get('fundamental', {})
-                }
-            except Exception as e:
-                result_item['status'] = 'fail'
-                result_item['reason'] = str(e)
-                result_item['extra'] = {'原因': str(e)}
-        elif rule == 'active_smallmidcap_stock':
-            try:
-                from quant import analyze_active_smallmidcap_stock
-                result = analyze_active_smallmidcap_stock(symbol)
-                hit = bool(result.get('is_active', False))
-                reason = result.get('reason', '')
-                detail = result.get('detail', {})
-                # 获取最新快照
-                snapshot = get_stock_data(symbol, as_dict=True)
-                close = snapshot.get('current_price')
-                pre_close = snapshot.get('pre_close')
-                pct_change = round((close - pre_close) / pre_close * 100, 2) if close is not None and pre_close else None
-                result_item['hit'] = hit
-                result_item['reason'] = reason
-                result_item['market_data'] = {
-                    'close': close,
-                    'pre_close': pre_close,
-                    'pct_change': pct_change,
-                    'trigger_time': snapshot.get('update_time')
-                }
-                result_item['extra'] = detail
-            except Exception as e:
-                result_item['status'] = 'fail'
-                result_item['reason'] = str(e)
-                result_item['extra'] = {'原因': str(e)}
-        else:
-            result_item['status'] = 'fail'
-            result_item['reason'] = '不支持的规则'
-            result_item['extra'] = {'原因': '不支持的规则'}
-        # --- 新增命中时间逻辑 ---
-        user_status = monitor_status.setdefault(user_id, {})
-        symbol_status = user_status.setdefault(symbol, {})
-        rule_status = symbol_status.setdefault(rule, {})
-        prev_hit = rule_status.get('hit', False)
-        hit_start_time = rule_status.get('hit_start_time')
-        hit_end_time = rule_status.get('hit_end_time')
-        if result_item['hit']:
-            if not prev_hit:
-                # 首次命中，记录入场时间为最近交易日
-                hit_start_time = trade_date
-                hit_end_time = None
-            # 命中时不更新结束时间
-        else:
-            if prev_hit:
-                # 从命中变为未命中，记录出场时间为最近交易日
-                hit_end_time = trade_date
-            # 未命中时不更新开始时间
-        # 更新状态
-        rule_status['hit'] = result_item['hit']
-        rule_status['hit_start_time'] = hit_start_time
-        rule_status['hit_end_time'] = hit_end_time
-        result_item['hit_start_time'] = hit_start_time
-        result_item['hit_end_time'] = hit_end_time
-        # ---
-        results.append(result_item)
-        time.sleep(0.3)  # 每只股票间隔0.3秒，防止限流
-    save_monitor_status(monitor_status)
-    # --- 新增：存储本次执行记录 ---
-    today = datetime.now().strftime('%Y-%m-%d')
-    strategy_log = load_strategy_log()
-    user_log = strategy_log.setdefault(today, {}).setdefault(user_id, [])
-    # 追加本次执行结果（每次为一组results）
-    user_log.append({
-        'execute_time': execute_time,
-        'results': results
-    })
-    # 按 execute_time 倒序排序
-    user_log.sort(key=lambda x: x['execute_time'], reverse=True)
-    save_strategy_log(strategy_log)
-    # ---
-    # --- 修正：更新 user_monitor_config.json 的 alerts 字段为最新 results ---
-    all_data[user_id]['alerts'] = results
-    save_monitor_config(all_data)
-    # ---
-    return jsonify({'results': results})
-
+    """
+    执行观察列表规则
+    只处理简单的参数验证和调用业务服务
+    """
+    try:
+        data = request.get_json(force=True)
+        user_id = data.get("userId", "")
+        if not user_id:
+            return jsonify({"error": "userId必填"}), 400
+            
+        # 调用业务服务执行观察列表规则
+        from service.stock_service import execute_watchlist_rule_service
+        result = execute_watchlist_rule_service(rule, user_id)
+        
+        # 处理返回结果
+        if "error" in result:
+            return jsonify({"error": result["error"]}), result.get("status", 500)
+        
+        return jsonify({"results": result["results"]})
+        
+    except Exception as e:
+        logger.error(f"执行观察列表规则错误: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
 @app.route('/watchlist/last_result', methods=['GET'])
 def get_last_result():
     user_id = request.args.get('userId', '')
@@ -3723,5 +3154,715 @@ def api_get_plate_ranking_history(market, plate_class):
         logger.error(f"获取历史板块排名失败: {str(e)}")
         return jsonify({'error': f'获取历史板块排名失败: {str(e)}'}), 500
 
+@app.route('/api/quant/diagnosis/<symbol>', methods=['GET'])
+def get_stock_diagnosis_endpoint(symbol):
+    """
+    获取个股诊断分析
+    
+    Args:
+        symbol: 股票代码，如000001.SZ
+        
+    Returns:
+        完整的个股诊断分析结果，包含16个结构化字段
+    """
+    try:
+        if not symbol:
+            return jsonify({'error': '股票代码不能为空'}), 400
+        
+        # 调用个股诊断服务
+        result = get_stock_diagnosis(symbol)
+        
+        if 'error' in result:
+            return jsonify({'error': result['error']}), 400
+        
+        return jsonify({
+            'success': True,
+            'data': result
+        })
+        
+    except Exception as e:
+        logger.error(f"个股诊断失败 {symbol}: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/quant/health', methods=['GET'])
+def health_check():
+    """健康检查接口"""
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'service': 'quant_diagnosis',
+        'version': '1.0.0'
+    })
+
+# 新增：查询诊断报告的接口
+from service.quant_trading import query_diagnosis_reports, get_all_diagnosis_reports
+
+@app.route('/api/quant/diagnosis/query', methods=['GET'])
+def query_diagnosis_reports_api():
+    """
+    查询诊断报告接口
+    
+    Args:
+        symbols: 股票代码，支持单个或多个（逗号分隔）
+        date: 查询日期（格式：YYYY-MM-DD），未指定时返回最新数据
+        
+    Returns:
+        诊断报告查询结果
+        未指定日期时返回最新数据，指定日期时返回该日期数据
+    """
+    try:
+        symbols = request.args.get('symbols')
+        date = request.args.get('date')
+        
+        if not symbols:
+            return jsonify({'error': 'symbols参数不能为空'}), 400
+        
+        # 处理symbols参数，支持逗号分隔的多个股票
+        symbol_list = [s.strip() for s in symbols.split(',')]
+        
+        # 调用查询方法
+        result = query_diagnosis_reports(symbol_list, date)
+        
+        # 检查是否有错误
+        if 'error' in result:
+            return jsonify(result), 404
+        
+        return jsonify({
+            'success': True,
+            'data': result,
+            'query_params': {
+                'symbols': symbol_list,
+                'date': result.get('date', date)  # 使用实际查询的日期
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"查询诊断报告失败: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/quant/execute', methods=['GET', 'POST'])
+def execute_quant_trading():
+    """
+    执行当日量化交易策略
+    
+    GET /api/quant/execute?user_id=123&symbols=000001,000002
+    POST /api/quant/execute {"user_id": "123", "symbols": ["000001", "000002"]}
+    """
+    try:
+        from service.quant_trading import execute_daily_quant_trading
+        
+        # 解析用户ID参数（必填）
+        user_id = None
+        if request.method == 'POST':
+            if request.is_json:
+                user_id = request.json.get('user_id')
+                if not user_id:
+                    return jsonify({'success': False, 'error': '用户ID不能为空'}), 400
+                symbols = request.json.get('symbols', [])
+                if isinstance(symbols, str):
+                    symbols = [s.strip() for s in symbols.split(',') if s.strip()]
+            else:
+                return jsonify({'success': False, 'error': 'POST需传递JSON格式，包含user_id字段'}), 400
+        else:
+            user_id = request.args.get('user_id')
+            if not user_id:
+                return jsonify({'success': False, 'error': '用户ID不能为空'}), 400
+            symbols_str = request.args.get('symbols', '')
+            symbols = [s.strip() for s in symbols_str.split(',') if s.strip()]
+        
+        # 执行量化交易
+        logger.info(f"[execute_quant_trading] 用户{user_id}开始执行量化交易 symbols={symbols}")
+        result = execute_daily_quant_trading(user_id, symbols if symbols else None)
+        
+        if result.get('success'):
+            return jsonify({
+                'success': True,
+                'data': result,
+                'user_id': user_id,
+                'message': f'用户{user_id}量化交易执行完成 - 买入: {len(result.get("buy_executions", []))}, 卖出: {len(result.get("sell_executions", []))}',
+                'timestamp': datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'user_id': user_id,
+                'error': result.get('error', '执行失败'),
+                'timestamp': datetime.now().isoformat()
+            }), 400
+            
+    except Exception as e:
+        logger.error(f"执行量化交易失败: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/quant/orders/active', methods=['GET'])
+def get_active_quant_orders():
+    """
+    获取活跃量化订单
+    GET /api/quant/orders/active?user_id=123
+    """
+    try:
+        from service.quant_trading import get_active_quant_orders
+        
+        user_id = request.args.get('user_id')
+        if not user_id:
+            return jsonify({'success': False, 'error': '用户ID不能为空'}), 400
+        
+        orders = get_active_quant_orders(user_id)
+        return jsonify({
+            'success': True,
+            'data': orders,
+            'user_id': user_id,
+            'count': len(orders),
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"获取活跃订单失败: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/quant/account', methods=['GET'])
+def get_quant_account_info():
+    """
+    获取量化交易账户信息
+    GET /api/quant/account?user_id=123
+    """
+    try:
+        from service.quant_trading import get_quant_account_summary
+        
+        user_id = request.args.get('user_id')
+        if not user_id:
+            return jsonify({'success': False, 'error': '用户ID不能为空'}), 400
+        
+        summary = get_quant_account_summary(user_id)
+        return jsonify({
+            'success': True,
+            'data': summary,
+            'user_id': user_id,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"获取账户信息失败: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/quant/predictions/history/<symbol>', methods=['GET'])
+def get_stock_predictions_history(symbol):
+    """
+    获取指定股票的历史预测数据
+    GET /api/quant/predictions/history/<symbol>
+    
+    参数:
+        symbol: 股票代码，如 300059.SZ
+        days: 查询天数，默认30天（可选参数）
+        start_date: 开始日期，格式YYYY-MM-DD（可选参数）
+        end_date: 结束日期，格式YYYY-MM-DD（可选参数）
+        
+    返回:
+        {
+            "success": true,
+            "data": {
+                "2024-11-01": {预测数据},
+                "2024-10-31": {预测数据},
+                ...
+            },
+            "symbol": "300059.SZ",
+            "total_count": 30,
+            "date_range": {"start": "2024-10-02", "end": "2024-11-01"}
+        }
+    """
+    try:
+        from service.quant_trading import query_diagnosis_reports
+        from datetime import datetime, timedelta
+        from flask import request
+        
+        # 获取查询参数
+        days = request.args.get('days', type=int, default=30)
+        start_date = request.args.get('start_date', type=str)
+        end_date = request.args.get('end_date', type=str)
+        
+        # 计算日期范围
+        if start_date and end_date:
+            # 使用指定的日期范围
+            try:
+                start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+                end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            except ValueError:
+                return jsonify({
+                    "success": False,
+                    "error": "日期格式错误，请使用YYYY-MM-DD格式",
+                    "symbol": symbol
+                }), 400
+        else:
+            # 使用天数计算日期范围
+            end_dt = datetime.now()
+            start_dt = end_dt - timedelta(days=days)
+            start_date = start_dt.strftime('%Y-%m-%d')
+            end_date = end_dt.strftime('%Y-%m-%d')
+        
+        # 获取所有相关日期的诊断数据
+        all_data = {}
+        current_dt = start_dt
+        
+        while current_dt <= end_dt:
+            date_str = current_dt.strftime('%Y-%m-%d')
+            result = query_diagnosis_reports(symbol, date=date_str)
+            
+            if "error" not in result and symbol in result.get("results", {}):
+                diagnosis_data = result["results"][symbol]
+                if "diagnosis" in diagnosis_data:
+                    all_data[date_str] = diagnosis_data["diagnosis"]
+            
+            current_dt += timedelta(days=1)
+        
+        # 构建返回结果
+        if all_data:
+            sorted_dates = sorted(all_data.keys())
+            formatted_result = {
+                "success": True,
+                "data": all_data,
+                "symbol": symbol,
+                "total_count": len(all_data),
+                "date_range": {
+                    "start": sorted_dates[0] if sorted_dates else start_date,
+                    "end": sorted_dates[-1] if sorted_dates else end_date
+                },
+                "query_params": {
+                    "days": days,
+                    "start_date": start_date,
+                    "end_date": end_date
+                }
+            }
+            return jsonify(formatted_result)
+        else:
+            return jsonify({
+                "success": False,
+                "error": f"在指定日期范围内未找到{symbol}的诊断数据",
+                "symbol": symbol,
+                "date_range": {"start": start_date, "end": end_date}
+            }), 404
+            
+    except Exception as e:
+        logger.error(f"获取股票预测历史数据接口异常: {symbol}, 错误: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'symbol': symbol,
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/quant/user/trades', methods=['GET'])
+def get_user_trades():
+    """
+    获取用户历史交易记录
+    GET /api/quant/user/trades?user_id=123[&symbol=AAPL&start_date=2024-01-01&end_date=2024-12-31]
+    
+    参数:
+        user_id: 必需参数，用户ID
+        symbol: 可选参数，股票代码
+        start_date: 可选参数，开始日期(YYYY-MM-DD)
+        end_date: 可选参数，结束日期(YYYY-MM-DD)
+    
+    返回:
+        用户历史交易记录数据
+    """
+    try:
+        user_id = request.args.get('user_id')
+        symbol = request.args.get('symbol')
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        
+        if not user_id:
+            return jsonify({
+                'success': False,
+                'error': '用户ID不能为空',
+                'message': '请提供user_id参数'
+            }), 400
+        
+        # 调用服务层获取用户交易历史
+        result = get_user_trade_history(user_id, symbol, start_date, end_date)
+        
+        if result.get('success'):
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+            
+    except Exception as e:
+        logger.error(f"获取用户交易历史接口异常: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'message': '获取用户交易历史失败',
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/quant/positions/update', methods=['GET'])
+def update_user_positions_endpoint():
+    """
+    更新用户持仓信息
+    GET /api/quant/positions/update
+    
+    请求参数:
+    - user_id: 用户ID (必填)
+    - initial_cash: 初始资金 (可选, 默认100万)
+    
+    返回:
+    - success: 是否成功
+    - message: 操作结果描述
+    - positions: 更新后的持仓信息
+    - total_trades: 总交易次数
+    - total_value: 持仓总市值
+    """
+    try:
+        user_id = request.args.get('user_id')
+        initial_cash = request.args.get('initial_cash')
+        
+        if not user_id:
+            return jsonify({
+                'success': False,
+                'error': 'user_id参数不能为空'
+            }), 400
+        
+        # 转换initial_cash为float类型
+        if initial_cash:
+            try:
+                initial_cash = float(initial_cash)
+            except (ValueError, TypeError):
+                initial_cash = 1000000.0
+        else:
+            initial_cash = 1000000.0
+        
+        # 调用position_manager更新持仓
+        result = update_user_positions(user_id, initial_cash)
+        
+        if result.get('success'):
+            return jsonify({
+                'success': True,
+                'message': result.get('message', '持仓信息更新成功'),
+                'positions': result.get('positions', {}),
+                'total_trades': result.get('total_trades', 0),
+                'total_value': result.get('total_value', 0),
+                'current_cash': result.get('current_cash', initial_cash),
+                'last_update': result.get('last_update', datetime.now().isoformat())
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', '更新持仓信息失败')
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"更新用户持仓信息失败: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'error': f'更新用户持仓信息失败: {str(e)}'
+        }), 500
+
+@app.route('/api/quant/positions', methods=['GET'])
+def get_user_positions_endpoint():
+    """
+    获取用户当前持仓信息
+    GET /api/quant/positions
+    
+    请求参数:
+    - user_id: 用户ID (必填)
+    
+    返回:
+    - success: 是否成功
+    - positions: 当前持仓信息
+    - total_value: 持仓总市值
+    - current_cash: 当前现金余额
+    - total_trades: 总交易次数
+    - last_update: 最后更新时间
+    """
+    try:
+        user_id = request.args.get('user_id')
+        
+        if not user_id:
+            return jsonify({
+                'success': False,
+                'error': 'user_id参数不能为空'
+            }), 400
+        
+        # 调用position_manager获取持仓
+        result = get_user_positions(user_id)
+        
+        if result.get('success'):
+            return jsonify({
+                'success': True,
+                'positions': result.get('positions', {}),
+                'total_value': result.get('total_value', 0),
+                'current_cash': result.get('current_cash', 1000000.0),
+                'total_trades': result.get('total_trades', 0),
+                'last_update': result.get('last_update', '')
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', '获取持仓信息失败')
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"获取用户持仓信息失败: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'error': f'获取用户持仓信息失败: {str(e)}'
+        }), 500
+
+@app.route('/api/quant/health', methods=['GET'])
+def quant_health_check():
+    """
+    量化交易服务健康检查
+    GET /api/quant/health
+    """
+    return jsonify({
+        'success': True,
+        'message': '量化交易服务运行正常',
+        'timestamp': datetime.now().isoformat(),
+        'endpoints': [
+            'GET/POST /api/quant/execute?user_id=123[&symbols=000001,000002]',
+            'GET /api/quant/orders/active?user_id=123',
+            'POST /api/quant/orders/clear {"user_id": "123"}',
+            'GET /api/quant/account?user_id=123',
+            'GET /api/quant/predictions/history/<symbol>',
+            'GET /api/quant/predictions/history',
+            'GET /api/quant/user/trades?user_id=123[&symbol=AAPL&start_date=2024-01-01&end_date=2024-12-31]',
+            'GET /api/quant/positions/update?user_id=123',
+            'GET /api/quant/positions?user_id=123',
+            'GET /api/quant/health'
+        ],
+        'note': '所有接口都需要提供user_id参数'
+    })
+
+# 服务启动时自动启动定时任务（使用极简调度器）
+def start_scheduler():
+    """启动极简定时任务"""
+    if not SCHEDULER_AVAILABLE:
+        logger.warning("定时任务模块不可用，跳过自动启动")
+        return
+    
+    try:
+        success = start_simple_scheduler()
+        if success:
+            logger.info("✅ 极简定时任务已随服务自动启动")
+        else:
+            logger.info("极简定时任务已在运行中")
+    except Exception as e:
+        logger.error(f"❌ 启动极简定时任务失败: {str(e)}")
+
+@app.route('/api/quant/positions/details', methods=['GET'])
+def get_position_details_endpoint():
+    """
+    获取用户持仓明细信息
+    GET /api/quant/positions/details
+    
+    请求参数:
+    - user_id: 用户ID (必填)
+    - symbol: 股票代码 (可选)
+    - status: 持仓状态 ('active', 'partial_sold', 'closed', 'cancelled') (可选)
+    - active_only: 是否只返回活跃持仓 (可选, 默认true)
+    
+    返回:
+    - success: 是否成功
+    - position_details: 持仓明细列表
+    - summary: 汇总统计信息
+    - user_id: 用户ID
+    - query_params: 查询参数
+    """
+    try:
+        user_id = request.args.get('user_id')
+        
+        if not user_id:
+            return jsonify({
+                'success': False,
+                'error': 'user_id参数不能为空'
+            }), 400
+        
+        # 获取可选参数
+        symbol = request.args.get('symbol')
+        status = request.args.get('status')
+        active_only = request.args.get('active_only', 'true').lower() != 'false'
+        
+        # 调用position_manager获取持仓明细
+        result = get_user_position_details(
+            user_id=user_id,
+            symbol=symbol,
+            status=status,
+            active_only=active_only
+        )
+        
+        if result.get('success'):
+            return jsonify({
+                'success': True,
+                'position_details': result.get('position_details', []),
+                'summary': result.get('summary', {}),
+                'user_id': result.get('user_id', user_id),
+                'query_params': result.get('query_params', {})
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', '获取持仓明细失败')
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"获取用户持仓明细失败: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'error': f'获取用户持仓明细失败: {str(e)}'
+        }), 500
+
+@app.route('/api/quant/positions/recalculate', methods=['GET'])
+def recalculate_positions_endpoint():
+    """
+    重算用户所有持仓信息
+    GET /api/quant/positions/recalculate
+    
+    请求参数:
+    - user_id: 用户ID (必填)
+    - initial_cash: 初始资金 (可选，单位：元)
+    
+    返回:
+    - success: 是否成功
+    - message: 操作结果描述
+    - positions: 重新计算后的持仓信息
+    - total_trades: 总交易次数
+    - total_value: 持仓总市值
+    - current_cash: 当前现金
+    - user_id: 用户ID
+    """
+    try:
+        user_id = request.args.get('user_id')
+        
+        if not user_id:
+            return jsonify({
+                'success': False,
+                'error': 'user_id参数不能为空'
+            }), 400
+        
+        # 获取可选参数
+        initial_cash_str = request.args.get('initial_cash')
+        initial_cash = None
+        if initial_cash_str:
+            try:
+                initial_cash = float(initial_cash_str)
+                if initial_cash <= 0:
+                    return jsonify({
+                        'success': False,
+                        'error': 'initial_cash必须大于0'
+                    }), 400
+            except ValueError:
+                return jsonify({
+                    'success': False,
+                    'error': 'initial_cash格式错误，请输入数字'
+                }), 400
+        
+        # 调用recalculate_user_positions重算持仓
+        from service.position_manager import recalculate_user_positions
+        result = recalculate_user_positions(user_id=user_id, initial_cash=initial_cash)
+        
+        if result.get('success'):
+            return jsonify({
+                'success': True,
+                'message': result.get('message', '持仓重算成功'),
+                'positions': result.get('positions', {}),
+                'total_trades': result.get('total_trades', 0),
+                'total_value': result.get('total_value', 0),
+                'current_cash': result.get('current_cash', 0),
+                'user_id': result.get('user_id', user_id),
+                'last_update': datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': result.get('error', '持仓重算失败')
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"重算用户持仓失败: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'error': f'重算用户持仓失败: {str(e)}'
+        }), 500
+
+@app.route('/api/quant/trades/<int:record_id>', methods=['GET'])
+def delete_trade_record_endpoint(record_id):
+    """
+    根据ID删除交易记录
+    DELETE /api/quant/trades/<record_id>
+    
+    路径参数:
+    - record_id: 交易记录ID (必填)
+    
+    返回:
+    - success: 是否成功
+    - message: 操作结果描述
+    - deleted_id: 被删除的记录ID
+    - deleted_count: 删除的记录数量
+    """
+    try:
+        # 调用data_service删除交易记录
+        from service.storage.data_service import data_service
+        success = data_service.delete_trade_record_by_id(record_id)
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': f'交易记录 {record_id} 删除成功',
+                'deleted_id': record_id,
+                'deleted_count': 1
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': f'未找到ID为 {record_id} 的交易记录'
+            }), 404
+            
+    except Exception as e:
+        logger.error(f"删除交易记录失败: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'error': f'删除交易记录失败: {str(e)}'
+        }), 500
+
+# 在服务启动时自动启动定时任务
+start_scheduler()
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5001, debug=True) 
+    from datetime import datetime
+    print("🚀 启动服务...")
+    print("📡 服务地址: http://localhost:5001")
+    print("📊 量化交易接口：")
+    print("  GET/POST  http://localhost:5001/api/quant/execute?user_id=123[&symbols=000001,000002]")
+    print("  GET       http://localhost:5001/api/quant/orders/active?user_id=123")
+    print("  GET       http://localhost:5001/api/quant/account?user_id=123")
+    print("  GET       http://localhost:5001/api/quant/user/trades?user_id=123[&symbol=AAPL&start_date=2024-01-01&end_date=2024-12-31]")
+    print("  GET       http://localhost:5001/api/quant/user/trades/summary?user_id=123")
+    print("  GET       http://localhost:5001/api/quant/positions/update?user_id=123")
+    print("  GET       http://localhost:5001/api/quant/positions?user_id=123")
+    print("  GET       http://localhost:5001/api/quant/positions/details?user_id=123[&symbol=000001.SZ&status=active&active_only=true]")
+    print("  GET       http://localhost:5001/api/quant/positions/recalculate?user_id=123[&initial_cash=1000000]")
+    print("  GET    http://localhost:5001/api/quant/trades/123 (删除单条交易记录)")
+    print("  GET       http://localhost:5001/api/quant/health")
+    print("⏰ 定时任务：周一到周五执行一次")
+    app.run(host='0.0.0.0', port=5001, debug=True)
