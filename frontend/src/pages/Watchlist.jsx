@@ -1,12 +1,13 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Row, Col, Form, Input, Button, Select, Table, Tag, message, Divider, Typography, Card, Modal, Tooltip, Collapse, Spin, Drawer, Tabs, InputNumber, DatePicker, Popconfirm, Statistic, Alert, Progress, Layout, Header, Content, Space } from 'antd';
-import { UserOutlined, FundOutlined, BellOutlined, SettingOutlined, StockOutlined, CheckCircleTwoTone, ThunderboltOutlined, DownOutlined, UpOutlined, PieChartOutlined, ArrowUpOutlined, ArrowDownOutlined, EyeOutlined, EyeInvisibleOutlined, DollarCircleFilled, UserAddOutlined, SaveOutlined, PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, BookOutlined, ExperimentOutlined, LoadingOutlined, ShareAltOutlined, CopyOutlined } from '@ant-design/icons';
+import { UserOutlined, FundOutlined, BellOutlined, SettingOutlined, StockOutlined, CheckCircleTwoTone, ThunderboltOutlined, DownOutlined, UpOutlined, PieChartOutlined, ArrowUpOutlined, ArrowDownOutlined, EyeOutlined, EyeInvisibleOutlined, DollarCircleFilled, DollarCircleOutlined, UserAddOutlined, SaveOutlined, PlusOutlined, EditOutlined, DeleteOutlined, SearchOutlined, BookOutlined, ExperimentOutlined, LoadingOutlined, ShareAltOutlined, CopyOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import FundamentalAnalysisResult from '../components/FundamentalAnalysisResult';
 import ReactMarkdown from 'react-markdown';
 import CapitalDistributionPie from '../components/CapitalDistributionPie';
 import TradingNotes from '../components/TradingNotes';
 import PlateRanking from '../components/PlateRanking';
+import QuantTradingPanel from '../components/QuantTradingPanel';
 
 
 // K线图表组件
@@ -172,9 +173,8 @@ export default function Watchlist() {
   // 受控表单状态
   const [userId, setUserId] = useState(''); // 默认为空，不从localStorage读取
   const [stocks, setStocks] = useState('');
-  const [frequency, setFrequency] = useState(undefined);
-  const [rules, setRules] = useState([]);
   const [alerts, setAlerts] = useState([]);
+  const [quantTradingEnabled, setQuantTradingEnabled] = useState(false); // 量化交易开关，默认关闭
   const [execModal, setExecModal] = useState(false);
   const [execLoading, setExecLoading] = useState(false);
   const [execResult, setExecResult] = useState([]);
@@ -232,9 +232,11 @@ export default function Watchlist() {
   const [lastSignalTimeMap, setLastSignalTimeMap] = useState({});
   const [newSignalMap, setNewSignalMap] = useState({});
   const [timelineModal, setTimelineModal] = useState({ visible: false, symbol: '', signals: [] });
-  // 智能盯盘折叠控制
-  const [smartMonitorCollapsed, setSmartMonitorCollapsed] = useState(false);
+  // 智能盯盘折叠控制 - 默认折叠
+  const [smartMonitorCollapsed, setSmartMonitorCollapsed] = useState(true);
   const [tradingNotesCollapsed, setTradingNotesCollapsed] = useState(true);
+  // 量化交易折叠控制
+  const [quantTradingCollapsed, setQuantTradingCollapsed] = useState(true);
   // 资金流相关 state
   const [capitalFlow, setCapitalFlow] = useState(null);
   const [capitalFlowLoading, setCapitalFlowLoading] = useState(false);
@@ -247,6 +249,8 @@ export default function Watchlist() {
   const [pageAuthError, setPageAuthError] = useState('');
   // Watchlist 组件 state 区域添加
   const [showBlinkDot, setShowBlinkDot] = useState(true);
+  // 定时刷新开关
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
   // 1. 新增state
   const [orderBookModal, setOrderBookModal] = useState({ visible: false, symbol: '', name: '' });
   const [orderBookData, setOrderBookData] = useState(null);
@@ -315,6 +319,12 @@ export default function Watchlist() {
     }
   };
 
+  // 获取量化交易信号 - 现在由QuantTradingPanel内部处理
+  const fetchQuantSignals = () => {
+    // 这个函数现在由QuantTradingPanel组件内部处理
+    // 不再重复调用行情接口，直接共享stockSnapshots数据
+  };
+
   // 拉取行情快照、K线和分时
   const fetchStockDetail = (code) => {
     setStockDetailData(null);
@@ -359,7 +369,7 @@ export default function Watchlist() {
     // 页面初始不自动填充任何信息，所有表单项为空，用户需手动输入ID后查询
   }, []);
 
-  // 获取监控股票快照（首次和stocks变化时）
+  // 获取监控股票快照（首次和stocks变化时，受开关控制）
   useEffect(() => {
     const stockArr = stocks.split(/[ ,，]+/).filter(Boolean);
     // 默认合并关键指数
@@ -411,9 +421,11 @@ export default function Watchlist() {
         });
     };
     fetchAll();
-    timer = setInterval(fetchAll, 5000);
+    if (autoRefreshEnabled) {
+      timer = setInterval(fetchAll, 5000);
+    }
     return () => clearInterval(timer);
-  }, [stocks]);
+  }, [stocks, autoRefreshEnabled]);
 
   // 分时图渲染副作用
   useEffect(() => {
@@ -473,9 +485,8 @@ export default function Watchlist() {
       const payload = {
         userId,
         stocks: stocks.split(/[ ,，]+/).filter(Boolean),
-        frequency,
-        rules,
-        alerts
+        alerts,
+        quant_trading_enabled: quantTradingEnabled
       };
       console.log('handleSave payload', payload);
       localStorage.setItem('userId', userId);
@@ -496,15 +507,13 @@ export default function Watchlist() {
       const res = await axios.get(`${API_BASE_URL}/watchlist/query/monitor?userId=${userId}`);
       const data = res.data || {};
       setStocks(Array.isArray(data.stocks) ? data.stocks.join(',') : (data.stocks || ''));
-      setFrequency(data.frequency || undefined);
-      setRules(Array.isArray(data.rules) ? data.rules : []);
       setAlerts(data.alerts || []);
+      setQuantTradingEnabled(data.quant_trading_enabled || false);
       message.success('查询成功');
     } catch (e) {
       setStocks('');
-      setFrequency(undefined);
-      setRules([]);
       setAlerts([]);
+      setQuantTradingEnabled(false);
       message.error('未查到该用户配置');
     }
     // 新增：查询账户信息
@@ -764,8 +773,9 @@ export default function Watchlist() {
     });
   }
 
-  // 智能盯盘定时轮询
+  // 智能盯盘定时轮询（受开关控制）
   useEffect(() => {
+    return;
     if (!stocks) return;
     const stockArr = stocks.split(/[ ,，]+/).filter(Boolean);
     if (!stockArr.length) return;
@@ -809,9 +819,11 @@ export default function Watchlist() {
       }
     };
     fetchMonitorSignals();
-    timer = setInterval(fetchMonitorSignals, 30000);
+    if (autoRefreshEnabled) {
+   //   timer = setInterval(fetchMonitorSignals, 30000);
+    }
     return () => clearInterval(timer);
-  }, [stocks]);
+  }, [stocks, autoRefreshEnabled]);
 
   // 智能盯盘渲染逻辑
   const sortedStocks = Object.keys(watchlistEventsByStock)
@@ -1262,9 +1274,9 @@ export default function Watchlist() {
     }).catch(() => message.error('下单失败'));
   };
 
-  // 定时刷新账户信息（每10秒）
+  // 定时刷新账户信息（每10秒，受开关控制）
   useEffect(() => {
-    if (!userId) return;
+    if (!userId || !autoRefreshEnabled) return;
     const fetchAccount = async () => {
       try {
         const accRes = await axios.get(`${API_BASE_URL}/api/trade/query`, { params: { user_id: userId } });
@@ -1278,7 +1290,7 @@ export default function Watchlist() {
     fetchAccount();
     const timer = setInterval(fetchAccount, 10000);
     return () => clearInterval(timer);
-  }, [userId]);
+  }, [userId, autoRefreshEnabled]);
 
   return (
     <>
@@ -1851,88 +1863,145 @@ export default function Watchlist() {
           </Modal>
           <Row style={{ minHeight: '100vh', background: 'linear-gradient(135deg, #181c24 0%, #232a36 100%)', color: '#fff' }}>
             <Col span={6} style={{ padding: 12, borderRight: '1px solid #222', background: 'rgba(24,28,36,0.98)', boxShadow: '2px 0 12px #0002' }}>
-              <Collapse defaultActiveKey={[]} style={{ background: '#232a36', borderRadius: 10, boxShadow: '0 2px 8px #0003', border: 'none', marginBottom: 8 }}
+              <Collapse 
+                defaultActiveKey={[]} 
+                style={{ background: '#232a36', borderRadius: 10, boxShadow: '0 2px 8px #0003', border: 'none', marginBottom: 8 }}
                 expandIconPosition="end"
-              >
-                <Collapse.Panel 
-                  header={<span style={{ color: '#faad14', fontWeight: 700, fontSize: 16 }}> <SettingOutlined style={{ color: '#faad14', marginRight: 8 }} />自选股监控设置</span>} 
-                  key="1"
-                  style={{ background: '#232a36', borderRadius: 10, border: 'none', color: '#e6f7ff' }}
-                  showArrow={true}
-                >
-                  <Form layout="vertical">
-                    <Form.Item label={<span style={{ color: '#1890ff', fontSize: 13 }}><UserOutlined style={{ marginRight: 4 }} />用户ID</span>} style={{ marginBottom: 10 }}>
-                      <Space.Compact style={{ width: '100%' }}>
-                        <Input
-                          value={userId}
-                          onChange={e => setUserId(e.target.value)}
-                          placeholder="请输入用户ID"
-                          style={{ width: '70%', minWidth: 80, borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
-                        />
-                        <Button
-                          type="default"
-                          size="small"
-                          onClick={handleQuery}
-                          style={{
-                            width: '30%',
-                            minWidth: 60,
-                            background: '#232a36',
-                            border: '1.5px solid #52c41a',
-                            color: '#52c41a',
-                            fontWeight: 600,
-                            height: 32,
-                            boxShadow: '0 0 0 1px #52c41a33',
-                            transition: 'all 0.2s',
-                            borderTopLeftRadius: 0,
-                            borderBottomLeftRadius: 0
-                          }}
-                          onMouseOver={e => {
-                            e.currentTarget.style.border = '1.5px solid #7cffb2';
-                            e.currentTarget.style.color = '#7cffb2';
-                          }}
-                          onMouseOut={e => {
-                            e.currentTarget.style.border = '1.5px solid #52c41a';
-                            e.currentTarget.style.color = '#52c41a';
-                          }}
-                        >
-                          <UserOutlined /> 查询
-                        </Button>
-                      </Space.Compact>
-                    </Form.Item>
-                    <Form.Item label={<span style={{ color: '#1890ff', fontSize: 13 }}><FundOutlined style={{ marginRight: 4 }} />监控股票列表</span>}>
-                      <Input.TextArea value={stocks} onChange={e => setStocks(e.target.value)} placeholder="输入股票代码，用逗号或空格分隔" rows={2} />
-                    </Form.Item>
-                    <Form.Item label={<span style={{ color: '#1890ff', fontSize: 13 }}><BellOutlined style={{ marginRight: 4 }} />监控频率</span>}>
-                      <Select value={frequency} onChange={setFrequency} placeholder="请选择监控频率">
-                        <Option value="5min">每5分钟</Option>
-                        <Option value="30min">每30分钟</Option>
-                        <Option value="1d">每日</Option>
-                      </Select>
-                    </Form.Item>
-                    <Form.Item label={<span style={{ color: '#1890ff', fontSize: 13 }}><SettingOutlined style={{ marginRight: 4 }} />监控规则</span>}>
-                      <Select mode="multiple" value={rules} onChange={setRules} placeholder="请选择监控规则">
-                        {defaultRules.map(rule => (
-                          <Option key={rule.value} value={rule.value}>{rule.icon}{rule.label}</Option>
-                        ))}
-                      </Select>
-                    </Form.Item>
-                    <Form.Item style={{ marginBottom: 0 }}>
-                      <Button
-                        type="button"
-                        onClick={handleSave}
-                        style={{ background: '#1890ff', border: 'none', fontWeight: 600, height: 38, fontSize: 16, color: '#fff' }}
-                        block
-                      >
-                        <SettingOutlined /> 保存设置
-                      </Button>
-                    </Form.Item>
-                  </Form>
-                </Collapse.Panel>
-              </Collapse>
+                items={[
+                  {
+                    key: '1',
+                    label: <span style={{ color: '#faad14', fontWeight: 700, fontSize: 16 }}> <SettingOutlined style={{ color: '#faad14', marginRight: 8 }} />自选股监控设置</span>,
+                    children: (
+                      <Form layout="vertical">
+                        <Form.Item label={<span style={{ color: '#1890ff', fontSize: 13 }}><UserOutlined style={{ marginRight: 4 }} />用户ID</span>} style={{ marginBottom: 10 }}>
+                          <Space.Compact style={{ width: '100%' }}>
+                            <Input
+                              value={userId}
+                              onChange={e => setUserId(e.target.value)}
+                              placeholder="请输入用户ID"
+                              style={{ width: '70%', minWidth: 80, borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
+                            />
+                            <Button
+                              type="default"
+                              size="small"
+                              onClick={handleQuery}
+                              style={{
+                                width: '30%',
+                                minWidth: 60,
+                                background: '#232a36',
+                                border: '1.5px solid #52c41a',
+                                color: '#52c41a',
+                                fontWeight: 600,
+                                height: 32,
+                                boxShadow: '0 0 0 1px #52c41a33',
+                                transition: 'all 0.2s',
+                                borderTopLeftRadius: 0,
+                                borderBottomLeftRadius: 0
+                              }}
+                              onMouseOver={e => {
+                                e.currentTarget.style.border = '1.5px solid #7cffb2';
+                                e.currentTarget.style.color = '#7cffb2';
+                              }}
+                              onMouseOut={e => {
+                                e.currentTarget.style.border = '1.5px solid #52c41a';
+                                e.currentTarget.style.color = '#52c41a';
+                              }}
+                            >
+                              <UserOutlined /> 查询
+                            </Button>
+                          </Space.Compact>
+                        </Form.Item>
+                        <Form.Item label={<span style={{ color: '#1890ff', fontSize: 13 }}><FundOutlined style={{ marginRight: 4 }} />监控股票列表</span>}>
+                          <Input.TextArea value={stocks} onChange={e => setStocks(e.target.value)} placeholder="输入股票代码，用逗号或空格分隔" rows={2} />
+                        </Form.Item>
+                        <Form.Item label={<span style={{ color: '#1890ff', fontSize: 13 }}><SettingOutlined style={{ marginRight: 4 }} />量化交易开关</span>}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <div 
+                              style={{
+                                width: 40,
+                                height: 20,
+                                background: quantTradingEnabled ? '#52c41a' : '#313a4d',
+                                borderRadius: 10,
+                                cursor: 'pointer',
+                                position: 'relative',
+                                transition: 'all 0.3s ease',
+                                border: '1px solid #313a4d'
+                              }}
+                              onClick={() => setQuantTradingEnabled(!quantTradingEnabled)}
+                            >
+                              <div 
+                                style={{
+                                  width: 16,
+                                  height: 16,
+                                  background: '#fff',
+                                  borderRadius: '50%',
+                                  position: 'absolute',
+                                  top: 1,
+                                  left: quantTradingEnabled ? 22 : 2,
+                                  transition: 'all 0.3s ease',
+                                  boxShadow: '0 1px 3px rgba(0,0,0,0.3)'
+                                }}
+                              />
+                            </div>
+                            <span style={{ color: quantTradingEnabled ? '#52c41a' : '#b0bec5', fontSize: 12 }}>
+                              {quantTradingEnabled ? '已开启' : '已关闭'}
+                            </span>
+                          </div>
+                        </Form.Item>
+                        <Form.Item style={{ marginBottom: 0 }}>
+                          <Button
+                            type="button"
+                            onClick={handleSave}
+                            style={{ background: '#1890ff', border: 'none', fontWeight: 600, height: 38, fontSize: 16, color: '#fff' }}
+                            block
+                          >
+                            <SettingOutlined /> 保存设置
+                          </Button>
+                        </Form.Item>
+                      </Form>
+                    ),
+                    style: { background: '#232a36', borderRadius: 10, border: 'none', color: '#e6f7ff' }
+                  }
+                ]}
+              />
               {/* 监控股票列表展示 */}
               <Card style={{ background: '#232a36', borderRadius: 10, marginTop: 8, marginBottom: 8, boxShadow: '0 2px 8px #0003', border: 'none', padding: 0 }} styles={{ body: { padding: 10 } }}>
-                <div style={{ color: '#faad14', fontWeight: 700, fontSize: 15, marginBottom: 6 }}>
-                  <StockOutlined style={{ marginRight: 6 }} />监控股票列表
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <div style={{ color: '#faad14', fontWeight: 700, fontSize: 15 }}>
+                    <StockOutlined style={{ marginRight: 6 }} />监控股票列表
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ color: '#b0bec5', fontSize: 12, fontWeight: 500 }}>
+                      {autoRefreshEnabled ? '自动刷新' : '已暂停'}
+                    </span>
+                    <div 
+                      style={{
+                        width: 40,
+                        height: 20,
+                        background: autoRefreshEnabled ? '#52c41a' : '#313a4d',
+                        borderRadius: 10,
+                        cursor: 'pointer',
+                        position: 'relative',
+                        transition: 'all 0.3s ease',
+                        border: '1px solid #313a4d'
+                      }}
+                      onClick={() => setAutoRefreshEnabled(!autoRefreshEnabled)}
+                    >
+                      <div 
+                        style={{
+                          width: 16,
+                          height: 16,
+                          background: '#fff',
+                          borderRadius: '50%',
+                          position: 'absolute',
+                          top: 1,
+                          left: autoRefreshEnabled ? 22 : 2,
+                          transition: 'all 0.3s ease',
+                          boxShadow: '0 1px 3px rgba(0,0,0,0.3)'
+                        }}
+                      />
+                    </div>
+                  </div>
                 </div>
                 {/* 表头 */}
                 <div style={{ display: 'flex', alignItems: 'center', fontSize: 12, fontWeight: 700, color: '#b0bec5', marginBottom: 4, paddingLeft: 2 }}>
@@ -2059,6 +2128,56 @@ export default function Watchlist() {
               </Card>
             </Col>
             <Col span={18} style={{ padding: 18 }}>
+              {/* 量化交易模块 - 支持折叠，高度与其他卡片一致 */}
+              <Card 
+                style={{ 
+                  background: 'rgba(30,34,44,0.98)', 
+                  borderRadius: 10, 
+                  boxShadow: '0 2px 8px #0003', 
+                  border: 'none', 
+                  marginTop: 16,
+                  marginBottom: 16,
+                  minHeight: quantTradingCollapsed ? 60 : 'auto'
+                }}
+                styles={{ 
+                  body: { 
+                    padding: quantTradingCollapsed ? '16px' : 16,
+                    minHeight: quantTradingCollapsed ? 28 : 'auto'
+                  } 
+                }}
+              >
+                <div
+                  style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    justifyContent: 'space-between', 
+                    margin: 0,
+                    cursor: 'pointer', 
+                    userSelect: 'none',
+                    height: 28
+                  }}
+                  onClick={() => setQuantTradingCollapsed(v => !v)}
+                >
+                  <Title level={5} style={{ color: '#faad14', fontWeight: 700, fontSize: 17, margin: 0, display: 'flex', alignItems: 'center' }}>
+                    <DollarCircleOutlined style={{ color: '#faad14', marginRight: 8 }} />量化交易
+                    <span style={{ marginLeft: 8, fontSize: 16 }}>{quantTradingCollapsed ? <DownOutlined /> : <UpOutlined />}</span>
+                  </Title>
+                </div>
+                {!quantTradingCollapsed && (
+                  <div style={{ marginTop: 12 }}>
+                    <QuantTradingPanel 
+                      userId={userId}
+                      selectedStock={selectedStock}
+                      stocks={stocks}
+                      stockSnapshots={stockSnapshots}
+                      onTradeSignal={(signal) => {
+                        message.success(`交易信号: ${signal.symbol} - ${signal.signal}`);
+                      }}
+                    />
+                  </div>
+                )}
+              </Card>
+
               {/* 智能盯盘模块 - 高端紧凑卡片实现（主内容区） */}
               <Card style={{ background: 'rgba(30,34,44,0.98)', borderRadius: 10, boxShadow: '0 2px 8px #0003', border: 'none', marginTop: 18 }} styles={{ body: { padding: 16 } }}>
                 <div
