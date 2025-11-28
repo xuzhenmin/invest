@@ -52,7 +52,7 @@ class StockDiagnosisService:
             diagnosis_prompt = self._build_diagnosis_prompt(symbol, basic_data)
             prompt_tokens = len(diagnosis_prompt.encode('utf-8')) // 4  # 粗略估算token数量
             logger.info(f"【诊断Prompt】{symbol}: 输入token数量 ≈ {prompt_tokens}")
-          #  logger.info(f"【诊断Prompt】{symbol}:\n{diagnosis_prompt}")
+            logger.info(f"【诊断Prompt】{symbol}:\n{diagnosis_prompt}")
             
             # 第3步：请求DeepSeek获取诊断报告
             deepseek_response = self._call_deepseek_analysis(diagnosis_prompt, basic_data)
@@ -91,10 +91,10 @@ class StockDiagnosisService:
         try:
             logger.info("【数据压缩】开始压缩基础数据...")
             
-            # 1. 财务数据压缩：只保留最新的10条
+            # 1. 财务数据压缩：只保留最新的5条
             if 'financials' in basic_data and basic_data['financials']:
                 original_count = len(basic_data['financials'])
-                basic_data['financials'] = basic_data['financials'][-10:]  # 只保留最新的10条
+                basic_data['financials'] = basic_data['financials'][:5]  # 只保留最新的5条（已按倒序排列）
                 compressed_count = len(basic_data['financials'])
                 logger.info(f"【数据压缩】财务数据：从{original_count}条压缩到{compressed_count}条")
             
@@ -337,10 +337,12 @@ class StockDiagnosisService:
             
             # 获取财务数据
             financials = self._get_financial_data_independent(symbol)
+            logger.info(f"【财务数据】financials内容: {financials}")
             if hasattr(financials, 'to_dict'):
                 financials_data = financials.fillna('').to_dict(orient='records')
             else:
                 financials_data = financials if isinstance(financials, list) else []
+            logger.info(f"【财务数据】financials_data内容: {financials_data}")
             
             # 新闻数据已经在上一步获取
             news_text = news_data
@@ -482,7 +484,7 @@ class StockDiagnosisService:
         capital_json = json.dumps(capital_data, ensure_ascii=False, indent=2, default=json_serial) if capital_data else '无资金流向数据'
         
         return f"""
-        你是一名资深金融分析师，请结合以下个股行情走势、技术指标、资金面和最新资讯，为投资者生成一份全面的诊断报告：
+        你是一名资深金融分析师，请结合以下个股行情走势、技术指标、财务面、资金面和最新资讯，为投资者生成一份全面的诊断报告：
 
         【基本信息】
         股票代码：{symbol}
@@ -514,7 +516,7 @@ class StockDiagnosisService:
         {basic_data.get('news_summary', '暂无相关新闻')}
 
         【财务数据】
-        历史财务数据：{len(basic_data.get('financials', []))}条记录
+        历史财务数据：{basic_data.get('financials', [])}条记录
 
         【分析要求】
         请基于以上数据，进行以下结构化分析并返回结果：
@@ -1414,7 +1416,162 @@ class StockDiagnosisService:
         return ""
     
     def _get_financial_data_independent(self, symbol: str) -> Any:
-        """独立获取财务数据，使用与app.py相同的方法"""
+        """独立获取财务数据，区分A股和港股处理，按报告期返回每个报告期的结构化数据"""
+        
+        def clean_and_convert_value(value):
+            """清洗并转换数值"""
+            import pandas as pd
+            import numpy as np
+            
+            if pd.isna(value) or value is None or value == '':
+                return None
+            
+            # 如果是字符串，去除空格和逗号
+            if isinstance(value, str):
+                value = value.strip().replace(',', '')
+                if value == '' or value == '-':
+                    return None
+                
+                # 尝试转换为数值
+                try:
+                    # 处理百分比
+                    if value.endswith('%'):
+                        return float(value.rstrip('%')) / 100
+                    # 处理普通数值
+                    return float(value)
+                except (ValueError, TypeError):
+                    return value
+            
+            # 已经是数值类型
+            if isinstance(value, (int, float, np.number)):
+                return float(value) if not pd.isna(value) else None
+            
+            return str(value)
+        
+        def parse_report_date(date_str):
+            """解析报告期日期，支持多种格式"""
+            if pd.isna(date_str) or date_str is None:
+                return None
+            
+            date_str = str(date_str).strip()
+            if not date_str or date_str.lower() == 'nan':
+                return None
+            
+            # 尝试不同的日期格式
+            formats = ['%Y%m%d', '%Y-%m-%d', '%Y/%m/%d', '%Y.%m.%d']
+            
+            for fmt in formats:
+                try:
+                    return pd.to_datetime(date_str, format=fmt)
+                except (ValueError, TypeError):
+                    continue
+            
+            # 如果所有格式都失败，尝试自动解析
+            try:
+                return pd.to_datetime(date_str, format='mixed')
+            except (ValueError, TypeError):
+                return None
+        
+        def is_hk_stock(symbol):
+            """判断是否为港股"""
+            return symbol.upper().endswith('.HK')
+        
+        def adapt_hk_financial_data(raw_data):
+            """适配港股财务数据结构 - 直接使用接口返回的指标名称"""
+            if raw_data is None or raw_data.empty:
+                return None
+            
+            try:
+                # 港股数据结构：接口已返回正确的指标名称
+                # 直接使用原始数据的列名，无需映射
+                
+                # 获取数据行
+                data_rows = raw_data.copy()
+                
+                # 创建重组后的数据结构
+                restructured_data = []
+                
+                # 获取列名（第一行应该是指标名称）
+                if len(data_rows) > 0:
+                    # 如果港股也是第一行是指标名称，则使用A股处理方式
+                    if isinstance(data_rows.iloc[0, 0], str) and '报告期' in str(data_rows.iloc[0, 0]):
+                        # 港股也使用A股处理方式
+                        return process_a_share_data(raw_data)
+                    
+                    # 否则直接使用列名
+                    columns = list(data_rows.columns)
+                    
+                    for idx, row in data_rows.iterrows():
+                        row_data = {}
+                        
+                        # 直接使用列名和对应值
+                        for col_name, value in zip(columns, row):
+                            cleaned_value = clean_and_convert_value(value)
+                            if cleaned_value is not None:
+                                row_data[str(col_name)] = cleaned_value
+                        
+                        if row_data.get('报告期') or row_data.get('报告期', '').strip():
+                            restructured_data.append(row_data)
+                
+                # 创建DataFrame
+                if restructured_data:
+                    result_df = pd.DataFrame(restructured_data)
+                    
+                    # 确保报告期列存在且格式正确
+                    report_period_col = None
+                    for col in result_df.columns:
+                        if '报告期' in str(col) or 'period' in str(col).lower():
+                            report_period_col = col
+                            break
+                    
+                    if report_period_col and report_period_col != '报告期':
+                        # 重命名报告期列
+                        result_df = result_df.rename(columns={report_period_col: '报告期'})
+                    
+                    return result_df
+                
+                return pd.DataFrame()
+                
+            except Exception as e:
+                logger.error(f"适配港股财务数据失败: {str(e)}")
+                return None
+        
+        def process_a_share_data(raw_data):
+            """处理A股财务数据"""
+            if raw_data is None or raw_data.empty:
+                return None
+            
+            try:
+                # A股数据结构：第一行是指标名称，从第二行开始是数据
+                indicator_names = raw_data.iloc[0].tolist()
+                data_rows = raw_data.iloc[1:].copy()
+                
+                # 创建重组后的数据结构
+                restructured_data = []
+                
+                # 遍历每一行（每个报告期）
+                for idx, row in data_rows.iterrows():
+                    report_data = {}
+                    
+                    # 遍历每个值和对应的指标名称
+                    for col_idx, (indicator_name, value) in enumerate(zip(indicator_names, row)):
+                        if col_idx == 0:  # 第一列是报告期
+                            report_data['报告期'] = str(value)
+                        elif indicator_name and indicator_name not in ['常用指标', '每股指标', '盈利能力', '成长能力', '收益质量', '财务风险', '营运能力', '指标']:
+                            # 跳过分类标题，只保留具体指标
+                            cleaned_value = clean_and_convert_value(value)
+                            if cleaned_value is not None:
+                                report_data[indicator_name] = cleaned_value
+                    
+                    if report_data.get('报告期') and report_data['报告期'] != 'nan':
+                        restructured_data.append(report_data)
+                
+                return pd.DataFrame(restructured_data)
+                
+            except Exception as e:
+                logger.error(f"处理A股财务数据失败: {str(e)}")
+                return None
+        
         try:
             import sys
             import os
@@ -1431,38 +1588,60 @@ class StockDiagnosisService:
                 # 获取财务数据
                 financial_data = get_stock_financials(symbol)
                 
-                # 处理DataFrame布尔值判断错误
-                if financial_data is not None:
-                    if isinstance(financial_data, pd.DataFrame):
-                        if not financial_data.empty:
-                            return financial_data
-                        else:
-                            logger.warning(f"{symbol}的财务数据为空DataFrame")
-                    elif isinstance(financial_data, list):
-                        if len(financial_data) > 0:
-                            return financial_data
-                        else:
-                            logger.warning(f"{symbol}的财务数据为空列表")
-                    elif isinstance(financial_data, dict):
-                        if financial_data:
-                            return [financial_data]  # 转换为列表
-                        else:
-                            logger.warning(f"{symbol}的财务数据为空字典")
+                if financial_data is not None and isinstance(financial_data, pd.DataFrame) and not financial_data.empty:
+                    
+                    # 判断市场类型并选择相应的处理方式
+                    if is_hk_stock(symbol):
+                        result_df = adapt_hk_financial_data(financial_data)
                     else:
-                        # 其他类型，直接返回
-                        return financial_data
+                        result_df = process_a_share_data(financial_data)
+                    
+                    if result_df is None or result_df.empty:
+                        return pd.DataFrame()
+                    
+                    # 按报告期排序（最新的在前面）
+                    try:
+                        # 过滤掉报告期为空的数据
+                        result_df = result_df[result_df['报告期'].notna()]
+                        result_df = result_df[result_df['报告期'] != 'nan']
+                        
+                        if result_df.empty:
+                            return pd.DataFrame()
+                        
+                        # 应用日期解析
+                        result_df['报告期_dt'] = result_df['报告期'].apply(parse_report_date)
+                        
+                        # 过滤掉报告期解析失败的数据
+                        result_df = result_df[result_df['报告期_dt'].notna()]
+                        
+                        if result_df.empty:
+                            return pd.DataFrame()
+                        
+                        # 按报告期排序（最新的在前面）
+                        result_df = result_df.sort_values('报告期_dt', ascending=False)
+                        result_df = result_df.drop('报告期_dt', axis=1)
+                        
+                    except Exception as e:
+                        # 如果日期解析失败，按字符串排序
+                        result_df = result_df[result_df['报告期'].notna()]
+                        result_df = result_df[result_df['报告期'] != 'nan']
+                        result_df = result_df.sort_values('报告期', ascending=False)
+                    
+                    # 重置索引
+                    result_df = result_df.reset_index(drop=True)
+                    
+                    return result_df
                 else:
-                    logger.warning(f"无法获取{symbol}的财务数据")
+                    return pd.DataFrame()
                     
             except ImportError:
                 # 如果quant模块不可用，使用备用方法
-                logger.warning("quant模块不可用，使用备用财务数据获取方法")
-                return []
+                return pd.DataFrame()
                 
         except Exception as e:
             logger.error(f"获取{symbol}财务数据失败: {str(e)}")
             
-        return []
+        return pd.DataFrame()
     
     def _get_fallback_market_data(self, symbol: str) -> Dict[str, Any]:
         """获取备用市场数据"""
