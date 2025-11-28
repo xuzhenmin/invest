@@ -2083,6 +2083,10 @@ def _execute_trading_decisions(
             # 1. 先处理卖出逻辑（基于持仓明细逐笔处理）
             symbol_position_details = position_details_by_symbol.get(symbol, [])
             
+            # 初始化卖出标志和数量
+            should_sell = False
+            sell_quantity = 0
+            
             for position_detail in symbol_position_details:
                 remaining_qty = float(position_detail.get('remaining_quantity', 0))
                 if remaining_qty <= 0:
@@ -2123,33 +2127,38 @@ def _execute_trading_decisions(
                 }
                 
                 # 基于持仓明细的卖出决策逻辑
-                should_sell = False
-                sell_quantity = remaining_qty
+                current_should_sell = False
+                current_sell_quantity = remaining_qty
                 
                 # 1. 基于该笔持仓的卖出价卖出
                 sell_price = sell_signal.get('sell_price', 0)
                 if sell_price > 0 and current_price >= sell_price:
-                    should_sell = True
+                    current_should_sell = True
                     logger.info(f"[_execute_trading_decisions] 达到卖出价卖出: {symbol} 卖出价{sell_price} 当前价{current_price}")
                 
                 # 2. 基于该笔持仓的止损价卖出
                 stop_loss = sell_signal.get('stop_loss', 0)
                 if stop_loss > 0 and current_price <= stop_loss:
-                    should_sell = True
+                    current_should_sell = True
                     logger.info(f"[_execute_trading_decisions] 触发止损卖出: {symbol} 止损价{stop_loss} 当前价{current_price}")
                 
                 # 3. 基于整体诊断评分卖出
                 if diagnosis.get("overall_score", 0) < 45:
-                    should_sell = True
+                    current_should_sell = True
                     logger.info(f"[_execute_trading_decisions] 评分过低卖出: {symbol} 评分{diagnosis.get('overall_score')}")
                 
                 # 4. 基于最大回撤卖出
                 max_drawdown = sell_signal.get('max_drawdown')
                 if max_drawdown and sell_signal.get('profit_rate', 0) < -max_drawdown:
-                    should_sell = True
+                    current_should_sell = True
                     logger.info(f"[_execute_trading_decisions] 触发最大回撤卖出: {symbol} 回撤{sell_signal.get('profit_rate'):.2f}%")
                 
-            if should_sell:
+                # 如果当前持仓应该卖出，更新全局卖出标志和数量
+                if current_should_sell:
+                    should_sell = True
+                    sell_quantity = current_sell_quantity
+                    
+            if should_sell and sell_quantity > 0:
                 # 调用sell_stock方法，基于持仓明细卖出
                 result = simulator.sell_stock(
                     user_id=user_id,
