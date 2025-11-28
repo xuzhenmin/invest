@@ -91,10 +91,10 @@ class StockDiagnosisService:
         try:
             logger.info("【数据压缩】开始压缩基础数据...")
             
-            # 1. 财务数据压缩：只保留最新的5条
+            # 1. 财务数据压缩：只保留最新的2条
             if 'financials' in basic_data and basic_data['financials']:
                 original_count = len(basic_data['financials'])
-                basic_data['financials'] = basic_data['financials'][:5]  # 只保留最新的5条（已按倒序排列）
+                basic_data['financials'] = basic_data['financials'][:2]  # 只保留最新的2条（已按倒序排列）
                 compressed_count = len(basic_data['financials'])
                 logger.info(f"【数据压缩】财务数据：从{original_count}条压缩到{compressed_count}条")
             
