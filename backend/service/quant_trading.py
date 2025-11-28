@@ -463,8 +463,23 @@ class StockDiagnosisService:
             logger.error(f"【数据获取】获取基础数据失败 {symbol}: {str(e)}", exc_info=True)
             raise Exception(f"获取基础数据失败: {str(e)}")
     
+    def _calculate_months_ago(self, financials: list) -> str:
+        """计算最新财报距今的月份数"""
+        try:
+            import pandas as pd
+            from datetime import datetime
+            
+            if not financials or not financials[0].get('报告期'):
+                return '未知'
+            
+            report_date = pd.to_datetime(str(financials[0].get('报告期')))
+            months_diff = (datetime.now() - report_date).days // 30
+            return str(months_diff)
+        except:
+            return '未知'
+
     def _build_diagnosis_prompt(self, symbol: str, basic_data: Dict[str, Any]) -> str:
-        """构建个股诊断prompt，参考app.py中的完整结构"""
+        """构建个股诊断prompt，优化财务数据权重和时效性影响"""
         
         # 处理K线数据为JSON格式，处理日期序列化问题
         def json_serial(obj):
@@ -516,13 +531,31 @@ class StockDiagnosisService:
         {basic_data.get('news_summary', '暂无相关新闻')}
 
         【财务数据】
-        历史财务数据：{basic_data.get('financials', [])}条记录
+        历史财务数据：{basic_data.get('financials', [])}
+        
+        今天日期：{datetime.now().strftime('%Y-%m-%d')}
+        最新财报时间：{basic_data.get('financials', [{}])[0].get('报告期', '未知') if basic_data.get('financials') else '无数据'}
+        财报距今：{self._calculate_months_ago(basic_data.get('financials', []))}个月
+
+        【财务数据时效性权重规则】
+        在评估基本面时，请严格遵循以下时效性权重规则：
+        - 最新财报（3个月内）：权重100%，正常参与基本面评分
+        - 上一期财报（3-6个月）：权重70%，评分×0.7
+        - 上上期财报（6-24个月）：权重30%，评分×0.3  
+        - 更早财报：权重0%，不计入基本面评分
+
+        【评分权重指导原则】
+        综合评分时，请按以下权重分配考虑各因素：
+        - 技术面：35%（K线走势、技术指标、短期趋势）
+        - 资金面：30%（资金流向、主力动向、成交量）
+        - 估值面：20%（PE、PB、相对估值水平）
+        - 基本面：15%（财务数据，需按上述时效性权重调整）
 
         【分析要求】
         请基于以上数据，进行以下结构化分析并返回结果：
 
-        1. **综合评分** (0-100分)：基于所有因素的综合评估
-        2. **基本面评分** (0-100分)：基于财务数据和估值水平
+        1. **综合评分** (0-100分)：基于加权因素的综合评估
+        2. **基本面评分** (0-100分)：基于时效性加权的财务数据分析
         3. **技术面评分** (0-100分)：基于K线走势和技术指标
         4. **资金面评分** (0-100分)：基于资金流向和主力动向
         5. **估值评分** (0-100分)：基于PE、PB等估值指标
@@ -534,9 +567,14 @@ class StockDiagnosisService:
         11. **压力位** (具体数值)：技术压力位
         12. **买入价** (具体数值)：建议买入价格
         13. **卖出价** (具体数值)：建议卖出价格
-        14. **投资理由** (详细分析)：包含技术面、基本面、资金面、新闻影响的综合分析
+        14. **投资理由** (详细分析)：包含技术面、资金面、估值、财务数据的综合分析
         15. **关键指标** (影响决策的核心指标)：列出3-5个最重要的决策指标
         16. **风险提示** (主要风险点)：列出主要风险因素
+
+        【重要提醒】
+        1. 财务数据对分值的影响应随时间递减，财报期越久影响越小
+        2. 整体降低财报对诊断的影响权重，技术面和资金面应占主导地位,估值和基本面逐级下降
+        3. 在投资理由中不要说明时效性权重的具体值
 
         【输出格式要求】
         请严格按照以下JSON格式返回，确保所有字段都有值：
