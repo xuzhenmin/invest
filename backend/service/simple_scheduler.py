@@ -232,9 +232,9 @@ class SimpleQuantScheduler:
             logger.error("   └─ 异常详情:", exc_info=True)
     
     def _execute_quant_trading(self):
-        """执行量化交易任务（包含诊断报告生成）"""
+        """执行量化交易任务（优化诊断报告逻辑：合并所有用户股票并去重）"""
         try:
-            logger.info("🤖 [QUANT] 开始执行量化交易任务（含诊断报告）")
+            logger.info("🤖 [QUANT] 开始执行量化交易任务（优化版：合并诊断）")
             
             import json
             import sys
@@ -248,91 +248,135 @@ class SimpleQuantScheduler:
             # 动态导入所需服务
             try:
                 from service.quant_trading import StockDiagnosisService, execute_daily_quant_trading
+                from service.storage.query_service import query_service
             except ImportError as e:
                 logger.error(f"❌ [QUANT] 无法导入服务: {str(e)}")
                 return
             
-            monitor_config_file = os.path.join(project_root, 'user_monitor_config.json')
+            # 第1步：从数据库收集所有需要量化交易用户的监控股票
+            logger.info("📊 [COLLECT] 开始从数据库收集所有用户的监控股票")
             
-            if not os.path.exists(monitor_config_file):
-                logger.warning("⚠️ [QUANT] 用户配置文件不存在")
+            active_users = []  # 存储需要处理的用户ID和对应股票
+            all_stocks_set = set()  # 用于去重的股票集合
+            
+            try:
+                # 使用新的方法查询所有开启量化交易的用户
+                users = query_service.get_all_users_with_quant_enabled()
+                
+                logger.info(f"📊 [DATABASE] 发现{len(users)}个开启量化交易的用户.{users}")
+                
+                for user_info in users:
+                    user_id = user_info.get('user_id')
+                    if not user_id:
+                        logger.warning("⚠️ [QUANT] 用户ID为空，跳过")
+                        continue
+                    
+                    # 获取用户监控股票列表（从quant_stocks字段）
+                    quant_stocks = user_info.get('quant_stocks', {})
+                    if isinstance(quant_stocks, dict):
+                        stocks = list(quant_stocks.keys())
+                    elif isinstance(quant_stocks, list):
+                        stocks = quant_stocks
+                    else:
+                        stocks = []
+                    
+                    if not stocks:
+                        logger.info(f"⏭️ [QUANT] 用户{user_id}无监控股票，跳过")
+                        continue
+                    
+                    # 记录用户和对应股票
+                    active_users.append({
+                        'user_id': user_id,
+                        'stocks': stocks,
+                        'user_config': user_info
+                    })
+                    
+                    # 合并到全局股票集合（自动去重）
+                    all_stocks_set.update(stocks)
+                    
+                    logger.info(f"✅ [COLLECT] 用户{user_id}: {len(stocks)}只股票，{stocks}")
+                    
+            except Exception as e:
+                logger.error(f"❌ [QUANT] 数据库查询失败: {str(e)}")
                 return
             
-            with open(monitor_config_file, 'r', encoding='utf-8') as f:
-                try:
-                    all_data = json.load(f)
-                except Exception as e:
-                    logger.error(f"❌ [QUANT] 加载用户配置失败: {str(e)}")
-                    return
+            if not active_users:
+                logger.info("⏭️ [QUANT] 无活跃用户需要处理，任务结束")
+                return
             
-            # 创建诊断服务实例
+            unique_stocks = list(all_stocks_set)
+            logger.info(f"📊 [COLLECT] 收集完成 - 活跃用户: {len(active_users)}, 去重股票: {len(unique_stocks)}")
+            logger.info(f"📋 [STOCKS] 去重后股票列表: {sorted(unique_stocks)}")
+            
+            # 第2步：统一执行诊断报告（合并去重后的股票）
+            logger.info("� [DIAGNOSIS] 开始统一执行诊断报告")
+            
             diagnosis_service = StockDiagnosisService()
+            stock_diagnosis_map = {}  # 股票 -> 诊断结果的映射
             
-            # 遍历所有用户配置
+            for stock_symbol in unique_stocks:
+                try:
+                    logger.info(f"🔍 [DIAGNOSIS] 诊断股票: {stock_symbol}")
+                    diagnosis_result = diagnosis_service.get_individual_diagnosis(stock_symbol)
+                    
+                    if diagnosis_result:
+                        stock_diagnosis_map[stock_symbol] = diagnosis_result
+                        logger.info(f"✅ [DIAGNOSIS] 诊断完成: {stock_symbol}")
+                    else:
+                        logger.warning(f"⚠️ [DIAGNOSIS] 诊断失败: {stock_symbol}")
+                        
+                except Exception as e:
+                    logger.error(f"❌ [DIAGNOSIS] 诊断异常 {stock_symbol}: {str(e)}")
+                    continue
+            
+            logger.info(f"📋 [DIAGNOSIS] 统一诊断完成: {len(stock_diagnosis_map)}个有效报告")
+            
+            # 第3步：为每个用户执行量化交易（使用缓存的诊断结果）
             processed_users = 0
-            generated_reports = 0
+            total_reports_used = 0
             
-            for user_id, user_config in all_data.items():
-                # 检查是否开启量化交易
-                quant_enabled = user_config.get('quant_trading_enabled', False)
-                if not quant_enabled:
-                    logger.info(f"⏭️ [QUANT] 用户{user_id}未开启量化交易，跳过")
-                    continue
+            for user_info in active_users:
+                user_id = user_info['user_id']
+                user_stocks = user_info['stocks']
+                user_config = user_info['user_config']
                 
-                # 获取用户监控股票列表
-                stocks = user_config.get('stocks', [])
-                if not stocks:
-                    logger.info(f"⏭️ [QUANT] 用户{user_id}无监控股票，跳过")
-                    continue
-                
-                logger.info(f"🎯 [QUANT] 开始处理用户{user_id}，股票数量: {len(stocks)}")
+                logger.info(f"🎯 [TRADING] 开始处理用户{user_id}，股票数量: {len(user_stocks)}")
                 
                 try:
-                    # 第1步：生成诊断报告
-                    logger.info(f"📊 [DIAGNOSIS] 开始生成诊断报告: 用户{user_id}")
-                    diagnosis_results = []
-                    
-                    for stock_symbol in stocks:
-                        try:
-                            logger.info(f"🔍 [DIAGNOSIS] 诊断股票: {stock_symbol} (用户{user_id})")
-                            diagnosis_result = diagnosis_service.get_individual_diagnosis(stock_symbol)
-                            
-                            if diagnosis_result:
-                                diagnosis_results.append(diagnosis_result)
-                                generated_reports += 1
-                                logger.info(f"✅ [DIAGNOSIS] 诊断完成: {stock_symbol}")
-                            else:
-                                logger.warning(f"⚠️ [DIAGNOSIS] 诊断失败: {stock_symbol}")
-                                
-                        except Exception as e:
-                            logger.error(f"❌ [DIAGNOSIS] 诊断异常 {stock_symbol}: {str(e)}")
-                            continue
-                    
-                    logger.info(f"📋 [DIAGNOSIS] 用户{user_id}诊断报告生成完成: {len(diagnosis_results)}个")
-                    
-                    # 第2步：基于诊断报告执行量化交易
-                    if diagnosis_results:
-                        logger.info(f"🤖 [TRADING] 开始执行量化交易: 用户{user_id}")
-                        trading_result = execute_daily_quant_trading(user_id, stocks)
-                        
-                        if trading_result and trading_result.get('success'):
-                            logger.info(f"✅ [TRADING] 量化交易执行成功: 用户{user_id}")
-                            logger.info(f"   ├─ 诊断报告: {len(diagnosis_results)}个")
-                            logger.info(f"   ├─ 买入订单: {len(trading_result.get('buy_executions', []))}")
-                            logger.info(f"   ├─ 卖出订单: {len(trading_result.get('sell_executions', []))}")
-                            logger.info(f"   └─ 总收益: {trading_result.get('total_profit', 0)}")
-                            processed_users += 1
+                    # 获取该用户的诊断结果（从缓存中查找）
+                    user_diagnosis_results = []
+                    for stock in user_stocks:
+                        if stock in stock_diagnosis_map:
+                            user_diagnosis_results.append(stock_diagnosis_map[stock])
                         else:
-                            error_msg = trading_result.get('error', '未知错误') if trading_result else '无返回结果'
-                            logger.warning(f"⚠️ [TRADING] 量化交易执行失败: 用户{user_id}, 错误: {error_msg}")
+                            logger.warning(f"⚠️ [TRADING] 用户{user_id}的股票{stock}无诊断报告")
+                    
+                    if not user_diagnosis_results:
+                        logger.warning(f"⚠️ [TRADING] 用户{user_id}无有效诊断报告，跳过交易")
+                        continue
+                    
+                    total_reports_used += len(user_diagnosis_results)
+                    
+                    # 执行量化交易
+                    logger.info(f"🤖 [TRADING] 开始执行量化交易: 用户{user_id} (使用{len(user_diagnosis_results)}个诊断报告)")
+                    trading_result = execute_daily_quant_trading(user_id, user_stocks)
+                    
+                    if trading_result and trading_result.get('success'):
+                        logger.info(f"✅ [TRADING] 量化交易执行成功: 用户{user_id}")
+                        logger.info(f"   ├─ 使用诊断报告: {len(user_diagnosis_results)}个")
+                        logger.info(f"   ├─ 买入订单: {len(trading_result.get('buy_executions', []))}")
+                        logger.info(f"   ├─ 卖出订单: {len(trading_result.get('sell_executions', []))}")
+                        logger.info(f"   └─ 总收益: {trading_result.get('total_profit', 0)}")
+                        processed_users += 1
                     else:
-                        logger.warning(f"⚠️ [QUANT] 用户{user_id}无有效诊断报告，跳过交易")
+                        error_msg = trading_result.get('error', '未知错误') if trading_result else '无返回结果'
+                        logger.warning(f"⚠️ [TRADING] 量化交易执行失败: 用户{user_id}, 错误: {error_msg}")
                         
                 except Exception as e:
                     logger.error(f"❌ [QUANT] 处理用户{user_id}异常: {str(e)}", exc_info=True)
                     continue
             
-            logger.info(f"🎉 [QUANT] 任务完成 - 处理用户: {processed_users}, 生成报告: {generated_reports}")
+            logger.info(f"🎉 [QUANT] 任务完成 - 处理用户: {processed_users}, 统一诊断: {len(stock_diagnosis_map)}, 使用报告: {total_reports_used}")
             
         except Exception as e:
             logger.error(f"❌ [QUANT] 量化交易任务失败: {str(e)}", exc_info=True)
