@@ -930,5 +930,24 @@ class QueryService:
                     result['quant_stocks'] = {}
             return result
         return None
+    
+    def get_all_users_with_quant_enabled(self) -> List[Dict[str, Any]]:
+        """获取所有开启量化交易的用户信息
+        
+        Returns:
+            开启量化交易的用户列表
+        """
+        query = "SELECT * FROM user_info WHERE quant_enabled = 1"
+        results = db_manager.execute_query(query)
+        
+        # 解析JSON数据
+        for result in results:
+            if result.get('quant_stocks'):
+                try:
+                    result['quant_stocks'] = json.loads(result['quant_stocks'])
+                except:
+                    result['quant_stocks'] = {}
+        
+        return results
 # 全局查询服务实例
 query_service = QueryService()
