@@ -82,7 +82,22 @@ class QuantTradingSimulator:
             current_cash = float(user_info.get('current_cash'))
             fee_rate = float(user_info.get('fee_rate'))
             
-            # 3. 买入条件判断：建议买入价是否在当日价格区间内
+            # 3. 买入条件判断：诊断报告评分检查
+            if signal_data:
+                overall_score = signal_data.get('overall_score', 0)
+                if overall_score < 55:
+                    error_msg = f"诊断报告评分{overall_score}分低于55分，不满足买入条件"
+                    self._save_unmet_condition(
+                        user_id=user_id,
+                        symbol=symbol,
+                        action="buy",
+                        reason=error_msg,
+                        signal_data=signal_data,
+                        details={"overall_score": overall_score, "min_required_score": 55}
+                    )
+                    return {"success": False, "error": error_msg}
+            
+            # 4. 买入条件判断：建议买入价是否在当日价格区间内
             if signal_data:
                 buy_price = signal_data.get('buy_price', price)
                 day_low = signal_data.get('day_low', 0)
@@ -101,7 +116,7 @@ class QuantTradingSimulator:
                     )
                     return {"success": False, "error": error_msg}
             
-            # 4. 一天一只股票只能买一次的限制
+            # 5. 一天一只股票只能买一次的限制
             if self.has_bought_today(user_id, symbol):
                 error_msg = f"今天已经买入过{symbol}"
                 self._save_unmet_condition(
@@ -114,7 +129,7 @@ class QuantTradingSimulator:
                 )
                 return {"success": False, "error": error_msg}
             
-            # 5. 资金检查
+            # 6. 资金检查
             total_amount = price * quantity
             fee = total_amount * fee_rate
             total_cost = total_amount + fee
@@ -471,11 +486,11 @@ class QuantTradingSimulator:
                     sell_reason = f"当前价{current_price}触及止损价{stop_loss}"
                 
                 # 新增：基于整体诊断评分强制卖出
-                overall_score = signal_data.get('overall_score', 0)
-                if overall_score < 45:
-                    should_sell = True
-                    sell_reason = f"整体诊断评分过低({overall_score}分)，触发强制卖出"
-                    logger.info(f"[sell_stock] 股票{symbol}评分{overall_score}低于45分，强制卖出")
+                # overall_score = signal_data.get('overall_score', 0)
+                # if overall_score < 45:
+                #     should_sell = True
+                #     sell_reason = f"整体诊断评分过低({overall_score}分)，触发强制卖出"
+                #     logger.info(f"[sell_stock] 股票{symbol}评分{overall_score}低于45分，强制卖出")
                 
                 if not should_sell:
                     error_msg = f"未触发止盈止损条件，止盈价{target_price}，止损价{stop_loss}，当前价{current_price}"
@@ -2050,38 +2065,46 @@ def _execute_trading_decisions(
     
     for symbol in symbols:
         try:
+            logger.info(f"[_execute_trading_decisions] 开始处理股票: {symbol}")
+            
             # 获取该股票的诊断报告
             diagnosis_data = historical_diagnoses.get(symbol)
+            logger.info(f"[_execute_trading_decisions] 股票{symbol}的诊断报告数据: {diagnosis_data is not None}")
             if not diagnosis_data:
                 logger.info(f"[_execute_trading_decisions] 跳过无诊断报告的股票: {symbol}")
                 continue
                 
             # 提取实际的诊断内容
             diagnosis = diagnosis_data.get("diagnosis", {})
+            logger.info(f"[_execute_trading_decisions] 股票{symbol}的诊断内容: {diagnosis}")
             if not diagnosis:
                 logger.info(f"[_execute_trading_decisions] 跳过无诊断内容的股票: {symbol}")
                 continue
                 
             # 检查诊断报告的评分是否为0，如果为0则认为报告未成功生成
             overall_score = diagnosis.get("overall_score", 0)
+            logger.info(f"[_execute_trading_decisions] 股票{symbol}的诊断评分: {overall_score}")
             if overall_score == 0:
                 logger.info(f"[_execute_trading_decisions] 跳过评分0的股票: {symbol} - 诊断报告未成功生成")
                 continue
             
             # 获取该股票的行情数据
             market_data = valid_market_data.get(symbol)
+            logger.info(f"[_execute_trading_decisions] 股票{symbol}的行情数据: {market_data is not None}")
             if not market_data:
                 logger.info(f"[_execute_trading_decisions] 跳过无行情数据的股票: {symbol}")
                 continue
             
             # 获取该股票的历史成交记录
             symbol_trades = [trade for trade in all_trades if trade.get("symbol") == symbol]
+            logger.info(f"[_execute_trading_decisions] 股票{symbol}的历史成交记录数量: {len(symbol_trades)}")
             
             # 构建交易参数
             current_price = float(market_data.get("last_price", 0))     
             
             # 1. 先处理卖出逻辑（基于持仓明细逐笔处理）
             symbol_position_details = position_details_by_symbol.get(symbol, [])
+            logger.info(f"[_execute_trading_decisions] 股票{symbol}的持仓明细数量: {len(symbol_position_details)}")
             
             # 初始化卖出标志和数量
             should_sell = False
@@ -2089,6 +2112,7 @@ def _execute_trading_decisions(
             
             for position_detail in symbol_position_details:
                 remaining_qty = float(position_detail.get('remaining_quantity', 0))
+                logger.info(f"[_execute_trading_decisions] 股票{symbol}持仓明细 - 剩余数量: {remaining_qty}")
                 if remaining_qty <= 0:
                     continue
                 
@@ -2102,6 +2126,7 @@ def _execute_trading_decisions(
                         diagnosis_data = {}
                 
                 # 基于该笔持仓的特定条件创建卖出信号
+                profit_rate = (current_price - buy_price) / buy_price * 100 if buy_price > 0 else 0
                 sell_signal = {
                     "symbol": symbol,
                     "name": diagnosis_data.get("name", symbol),
@@ -2123,35 +2148,64 @@ def _execute_trading_decisions(
                     "diagnosis": diagnosis_data,
                     "trade_history": symbol_trades,
                     "position_detail": position_detail,
-                    "profit_rate": (current_price - buy_price) / buy_price * 100 if buy_price > 0 else 0
+                    "profit_rate": profit_rate
                 }
+                
+                logger.info(f"[_execute_trading_decisions] 股票{symbol}卖出信号参数: 买入价{buy_price}, 当前价{current_price}, 盈亏率{profit_rate:.2f}%, 卖出价{sell_signal.get('sell_price')}, 止损价{sell_signal.get('stop_loss')}")
                 
                 # 基于持仓明细的卖出决策逻辑
                 current_should_sell = False
                 current_sell_quantity = remaining_qty
+                execution_price = None  # 新增：记录实际执行价格
+                sell_reason = None  # 新增：记录卖出原因
+
+                logger.info(f"[_execute_trading_decisions] 股票{symbol}开始卖出决策检查...")
                 
-                # 1. 基于该笔持仓的卖出价卖出
+                # 1. 基于该笔持仓的卖出价卖出（止盈价）
                 sell_price = sell_signal.get('sell_price', 0)
+                logger.info(f"[_execute_trading_decisions] 股票{symbol}卖出价检查 - 设定卖出价: {sell_price}, 当前价: {current_price}, 条件满足: {sell_price > 0 and current_price >= sell_price}")
                 if sell_price > 0 and current_price >= sell_price:
                     current_should_sell = True
-                    logger.info(f"[_execute_trading_decisions] 达到卖出价卖出: {symbol} 卖出价{sell_price} 当前价{current_price}")
+                    execution_price = sell_price
+                    sell_reason = f"达到预设卖出价{sell_price}"
+                    logger.info(f"[_execute_trading_decisions] 达到卖出价卖出: {symbol} 执行价{execution_price} 当前价{current_price}")
                 
                 # 2. 基于该笔持仓的止损价卖出
                 stop_loss = sell_signal.get('stop_loss', 0)
+                logger.info(f"[_execute_trading_decisions] 股票{symbol}止损价检查 - 设定止损价: {stop_loss}, 当前价: {current_price}, 条件满足: {stop_loss > 0 and current_price <= stop_loss}")
                 if stop_loss > 0 and current_price <= stop_loss:
                     current_should_sell = True
-                    logger.info(f"[_execute_trading_decisions] 触发止损卖出: {symbol} 止损价{stop_loss} 当前价{current_price}")
+                    execution_price = stop_loss
+                    sell_reason = f"触发止损价{stop_loss}"
+                    logger.info(f"[_execute_trading_decisions] 触发止损卖出: {symbol} 执行价{execution_price} 当前价{current_price}")
                 
                 # 3. 基于整体诊断评分卖出
-                if diagnosis.get("overall_score", 0) < 45:
-                    current_should_sell = True
-                    logger.info(f"[_execute_trading_decisions] 评分过低卖出: {symbol} 评分{diagnosis.get('overall_score')}")
+                # current_score = diagnosis.get("overall_score", 0)
+                # logger.info(f"[_execute_trading_decisions] 股票{symbol}评分检查 - 当前评分: {current_score}, 阈值: 45, 条件满足: {current_score < 45}")
+                # if current_score < 45:
+                #     current_should_sell = True
+                #     # 评分过低卖出时，使用卖出价作为执行价，如果没有则使用当前价
+                #     execution_price = sell_signal.get('sell_price', 0) or current_price
+                #     sell_reason = f"评分过低({current_score}分)"
+                #     logger.info(f"[_execute_trading_decisions] 评分过低卖出: {symbol} 评分{current_score} 执行价{execution_price}")
                 
                 # 4. 基于最大回撤卖出
                 max_drawdown = sell_signal.get('max_drawdown')
-                if max_drawdown and sell_signal.get('profit_rate', 0) < -max_drawdown:
+                if max_drawdown is None or max_drawdown == 0:
+                    max_drawdown = 15  # 默认最大回撤为15%
+                current_profit_rate = sell_signal.get('profit_rate', 0)
+                logger.info(f"[_execute_trading_decisions] 股票{symbol}回撤检查 - 最大回撤: {max_drawdown}%, 当前盈亏: {current_profit_rate:.2f}%, 条件满足: {current_profit_rate < -max_drawdown}")
+                if current_profit_rate < -max_drawdown:
                     current_should_sell = True
-                    logger.info(f"[_execute_trading_decisions] 触发最大回撤卖出: {symbol} 回撤{sell_signal.get('profit_rate'):.2f}%")
+                    execution_price = current_price  # 回撤卖出时使用实时市场价作为执行价
+                    sell_reason = f"触发最大回撤(当前{current_profit_rate:.2f}%, 阈值{max_drawdown}%)"
+                    logger.info(f"[_execute_trading_decisions] 触发最大回撤卖出: {symbol} 执行价{execution_price} (实时市场价)")
+                
+                # 确保有执行价格
+                if current_should_sell and execution_price is None:
+                    execution_price = sell_signal.get('sell_price', 0) or current_price
+
+                logger.info(f"[_execute_trading_decisions] 股票{symbol}卖出决策结果: {current_should_sell}, 卖出数量: {current_sell_quantity}, 执行价格: {execution_price}, 卖出原因: {sell_reason}")
                 
                 # 如果当前持仓应该卖出，更新全局卖出标志和数量
                 if current_should_sell:
@@ -2159,18 +2213,20 @@ def _execute_trading_decisions(
                     sell_quantity = current_sell_quantity
                     
             if should_sell and sell_quantity > 0:
-                # 调用sell_stock方法，基于持仓明细卖出
+                logger.info(f"[_execute_trading_decisions] 股票{symbol}准备执行卖出 - 卖出数量: {sell_quantity}, 执行价格: {execution_price}")
+                # 调用sell_stock方法，使用触发条件的价格而非实时市场价
                 result = simulator.sell_stock(
                     user_id=user_id,
                     symbol=symbol,
-                    price=current_price,
+                    price=execution_price,  # 使用触发条件的价格
                     quantity=sell_quantity,
-                    signal_data=sell_signal
+                    signal_data={**sell_signal, "execution_price": execution_price, "sell_reason": sell_reason}
                 )
                 
+                logger.info(f"[_execute_trading_decisions] 股票{symbol}卖出交易结果: {result}")
                 if result.get("success"):
                     results.append(result)
-                    logger.info(f"[_execute_trading_decisions] 基于持仓明细卖出成功: {symbol} {sell_quantity}股 (买入价{buy_price:.2f}, 卖出价{current_price:.2f}, 盈亏{sell_signal.get('profit_rate'):.2f}%)")
+                    logger.info(f"[_execute_trading_decisions] 基于持仓明细卖出成功: {symbol} {sell_quantity}股 (买入价{buy_price:.2f}, 卖出价{execution_price:.2f}, 盈亏{sell_signal.get('profit_rate'):.2f}%)")
                     
                 else:
                     logger.info(f"[_execute_trading_decisions] 基于持仓明细卖出未执行: {symbol} - {result.get('error')}")
@@ -2179,6 +2235,8 @@ def _execute_trading_decisions(
             buy_price = diagnosis.get("buy_price", current_price)
             if buy_price <= 0:
                 buy_price = current_price
+            
+            logger.info(f"[_execute_trading_decisions] 股票{symbol}买入逻辑 - 设定买入价: {buy_price}, 当前价: {current_price}")
             
             # 获取用户账户信息用于计算买入数量
             user_info = simulator._get_user_account_info(user_id)
@@ -2193,6 +2251,8 @@ def _execute_trading_decisions(
                 symbol=symbol,
                 lot_size=lot_size
             )
+            
+            logger.info(f"[_execute_trading_decisions] 股票{symbol}买入计算 - 可用资金: {available_cash}, 每手股数: {lot_size}, 计算买入数量: {quantity}")
             
             buy_signal = {
                 "symbol": symbol,
@@ -2213,6 +2273,7 @@ def _execute_trading_decisions(
             }
             
             # 调用buy_stock方法
+            logger.info(f"[_execute_trading_decisions] 股票{symbol}准备执行买入 - 买入数量: {quantity}, 买入价格: {buy_price}")
             result = simulator.buy_stock(
                 user_id=user_id,
                 symbol=symbol,
@@ -2274,7 +2335,7 @@ def execute_daily_quant_trading(user_id: str, symbols: List[str] = None) -> Dict
         
         # 第2步：获取并处理诊断报告
         historical_diagnoses = _get_historical_diagnoses(symbols)
-        logger.info(f"获取的历史诊断报告: {json.dumps(historical_diagnoses, indent=2, ensure_ascii=False, default=str)}")
+        #logger.info(f"获取的历史诊断报告: {json.dumps(historical_diagnoses, indent=2, ensure_ascii=False, default=str)}")
         if not historical_diagnoses:
             return {
                 "success": True,
