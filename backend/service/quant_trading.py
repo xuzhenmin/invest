@@ -123,6 +123,14 @@ class StockDiagnosisService:
                 compressed_count = len(basic_data['min15_kline_data'])
                 logger.info(f"【数据压缩】15分钟K线数据：从{original_count}条压缩到{compressed_count}条")
             
+            # 2.2 周K线数据压缩：限制数据量
+            if 'weekly_kline_data' in basic_data and basic_data['weekly_kline_data']:
+                original_count = len(basic_data['weekly_kline_data'])
+                # 限制最多25条周K线数据（约6个月的数据）
+                basic_data['weekly_kline_data'] = basic_data['weekly_kline_data'][-25:] if len(basic_data['weekly_kline_data']) > 25 else basic_data['weekly_kline_data']
+                compressed_count = len(basic_data['weekly_kline_data'])
+                logger.info(f"【数据压缩】周K线数据：从{original_count}条压缩到{compressed_count}条")
+            
             # 3. 资金流数据压缩
             if 'capital_flow' in basic_data and basic_data['capital_flow']:
                 capital_flow = basic_data['capital_flow']
@@ -321,6 +329,7 @@ class StockDiagnosisService:
                 market_data = self._get_market_data_independent(symbol)
                 kline_data = self._get_kline_data_independent(symbol)
                 min15_kline_data = self._get_15min_kline_data_independent(symbol)
+                weekly_kline_data = self._get_weekly_kline_data_independent(symbol)
                 capital_flow_data = self._get_capital_flow_data_independent(symbol)
                 news_data = self._get_news_data_independent(symbol)
                 
@@ -399,6 +408,21 @@ class StockDiagnosisService:
                     else:
                         min15_kline_recent.append(item)
             
+            # 处理周K线数据
+            weekly_kline_recent = []
+            if weekly_kline_data and len(weekly_kline_data) > 0:
+                for item in weekly_kline_data:
+                    if isinstance(item, dict):
+                        formatted_item = {}
+                        for key, value in item.items():
+                            if isinstance(value, (int, float)):
+                                formatted_item[key] = round(float(value), 4)
+                            else:
+                                formatted_item[key] = value
+                        weekly_kline_recent.append(formatted_item)
+                    else:
+                        weekly_kline_recent.append(item)
+            
             # 处理资金流向数据，格式化数值
             capital_analysis = {}
             if capital_flow_data:
@@ -455,6 +479,7 @@ class StockDiagnosisService:
                 "financials": formatted_financials,
                 "kline_data": kline_recent,
                 "min15_kline_data": min15_kline_recent,
+                "weekly_kline_data": weekly_kline_recent,
                 "capital_flow": capital_analysis,
                 "news_summary": str(news_text)
             }
@@ -495,6 +520,9 @@ class StockDiagnosisService:
         min15_kline_data = basic_data.get('min15_kline_data', [])[-30:] if basic_data.get('min15_kline_data') else []
         min15_kline_json = json.dumps(min15_kline_data, ensure_ascii=False, indent=2, default=json_serial) if min15_kline_data else '无当日15分钟K线数据'
         
+        weekly_kline_data = basic_data.get('weekly_kline_data', [])[-25:] if basic_data.get('weekly_kline_data') else []
+        weekly_kline_json = json.dumps(weekly_kline_data, ensure_ascii=False, indent=2, default=json_serial) if weekly_kline_data else '无周K线数据'
+        
         capital_data = basic_data.get('capital_flow', {})
         capital_json = json.dumps(capital_data, ensure_ascii=False, indent=2, default=json_serial) if capital_data else '无资金流向数据'
         
@@ -522,6 +550,10 @@ class StockDiagnosisService:
         【当日15分钟K线数据】
         当日15分钟K线数据（JSON）：
         {min15_kline_json}
+
+        【25周K线数据】
+        25周K线数据（JSON）：
+        {weekly_kline_json}
 
         【资金面数据】
         资金流向数据（JSON）：
@@ -600,86 +632,7 @@ class StockDiagnosisService:
         请以专业、客观的角度进行分析，确保数据准确可靠。
         """
     
-    def _generate_diagnosis_data(self, symbol: str, basic_data: Dict[str, Any]) -> Dict[str, Any]:
-        """生成结构化诊断数据，包含完整的16个字段"""
-        
-        # 基于基础数据计算各项评分
-        current_price = basic_data.get('current_price', 0)
-        pe_ratio = basic_data.get('pe_ratio', 0)
-        pb_ratio = basic_data.get('pb_ratio', 0)
-        change_rate = basic_data.get('change_rate', 0)
-        volume = basic_data.get('volume', 0)
-        
-        # 计算各项评分
-        fundamental_score = self._calculate_fundamental_score(pe_ratio, pb_ratio)
-        technical_score = self._calculate_technical_score(change_rate, basic_data.get('kline_data', []))
-        valuation_score = self._calculate_valuation_score(pe_ratio, pb_ratio)
-        capital_score = self._calculate_capital_score(basic_data.get('capital_flow', {}))
-        
-        # 计算综合评分
-        overall_score = (fundamental_score * 0.25 + 
-                        technical_score * 0.25 + 
-                        valuation_score * 0.25 + 
-                        capital_score * 0.25)
-        
-        # 基于评分生成投资建议和价格区间
-        if overall_score >= 80:
-            recommendation = "buy"
-            risk_level = "low"
-            target_price = current_price * 1.15
-            stop_loss = current_price * 0.92
-            support = current_price * 0.95
-            resistance = current_price * 1.08
-            buy_price = current_price * 0.98
-            sell_price = current_price * 1.12
-        elif overall_score >= 60:
-            recommendation = "hold"
-            risk_level = "medium"
-            target_price = current_price * 1.08
-            stop_loss = current_price * 0.95
-            support = current_price * 0.98
-            resistance = current_price * 1.05
-            buy_price = current_price
-            sell_price = current_price * 1.08
-        else:
-            recommendation = "sell"
-            risk_level = "high"
-            target_price = current_price * 0.95
-            stop_loss = current_price * 0.88
-            support = current_price * 0.92
-            resistance = current_price * 1.02
-            buy_price = current_price * 0.95
-            sell_price = current_price * 0.98
-        
-        # 生成详细的投资理由
-        investment_reason = self._generate_detailed_reason(overall_score, basic_data)
-        
-        # 生成关键指标和风险提示
-        key_indicators = self._generate_detailed_indicators(basic_data)
-        risk_warnings = self._generate_detailed_warnings(basic_data)
-        
-        return {
-            "symbol": symbol,
-            "name": basic_data.get('name', symbol),
-            "current_price": current_price,
-            "overall_score": round(overall_score, 1),
-            "fundamental_score": round(fundamental_score, 1),
-            "technical_score": round(technical_score, 1),
-            "capital_score": round(capital_score, 1),
-            "valuation_score": round(valuation_score, 1),
-            "risk_level": risk_level,
-            "recommendation": recommendation,
-            "target_price": round(target_price, 2),
-            "stop_loss": round(stop_loss, 2),
-            "support": round(support, 2),
-            "resistance": round(resistance, 2),
-            "buy_price": round(buy_price, 2),
-            "sell_price": round(sell_price, 2),
-            "investment_reason": investment_reason,
-            "key_indicators": key_indicators,
-            "risk_warnings": risk_warnings,
-            "timestamp": datetime.now().isoformat()
-        }
+
     
     def _calculate_fundamental_score(self, pe_ratio: float, pb_ratio: float) -> float:
         """计算基本面评分"""
@@ -766,48 +719,11 @@ class StockDiagnosisService:
         
         return min(score, 100)
     
-    def _generate_investment_reason(self, overall_score: float, basic_data: Dict[str, Any]) -> str:
-        """生成投资建议理由"""
-        if overall_score >= 80:
-            return f"股票{basic_data.get('name')}基本面优秀，估值合理，技术面强势，建议买入"
-        elif overall_score >= 60:
-            return f"股票{basic_data.get('name')}表现良好，估值适中，建议持有观察"
-        else:
-            return f"股票{basic_data.get('name')}基本面较弱，估值偏高，建议谨慎"
+
     
-    def _generate_key_indicators(self, basic_data: Dict[str, Any]) -> list:
-        """生成关键指标"""
-        indicators = []
-        
-        if basic_data.get('pe_ratio', 0) < 15:
-            indicators.append("估值偏低")
-        elif basic_data.get('pe_ratio', 0) > 30:
-            indicators.append("估值偏高")
-        
-        if basic_data.get('change_rate', 0) > 3:
-            indicators.append("技术面强势")
-        elif basic_data.get('change_rate', 0) < -3:
-            indicators.append("技术面弱势")
-        
-        if len(basic_data.get('capital_flow', {}).get('historical', [])) > 10:
-            indicators.append("资金活跃")
-        
-        return indicators
+
     
-    def _generate_risk_warnings(self, basic_data: Dict[str, Any]) -> list:
-        """生成风险提示"""
-        warnings = []
-        
-        if basic_data.get('pe_ratio', 0) > 50:
-            warnings.append("估值过高风险")
-        
-        if basic_data.get('change_rate', 0) < -5:
-            warnings.append("短期下跌风险")
-        
-        if basic_data.get('volume', 0) < 50000:
-            warnings.append("流动性风险")
-        
-        return warnings
+
 
     def _generate_detailed_reason(self, overall_score: float, basic_data: Dict[str, Any]) -> str:
         """生成详细的投资理由"""
@@ -932,6 +848,10 @@ class StockDiagnosisService:
                 'Authorization': f'Bearer {api_key}'
             }
             
+            # 清理prompt中的换行和多余空格
+            import re
+            clean_prompt = re.sub(r'\s+', ' ', prompt).strip()
+            
             payload = {
                 "model": "deepseek-chat",
                 "messages": [
@@ -941,7 +861,7 @@ class StockDiagnosisService:
                     },
                     {
                         "role": "user",
-                        "content": prompt
+                        "content": clean_prompt
                     }
                 ],
                 "temperature": 0.6,
@@ -1251,6 +1171,95 @@ class StockDiagnosisService:
                 
         except Exception as e:
             logger.error(f"获取{symbol}5分钟K线数据失败: {str(e)}")
+            
+        return []
+    
+    def _get_weekly_kline_data_independent(self, symbol: str) -> list:
+        """独立获取周K线数据，查询25周历史数据"""
+        try:
+            import sys
+            import os
+            import pandas as pd
+            from datetime import datetime, timedelta
+            
+            # 确保项目根目录在Python路径中
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
+            
+            try:
+                from futu import OpenQuoteContext, RET_OK, KLType, AuType
+                
+                # 解析股票代码
+                code_parts = symbol.split('.')
+                if len(code_parts) != 2:
+                    return []
+                
+                stock_code = code_parts[0]
+                market = code_parts[1].upper()
+                
+                # 转换为Futu格式
+                if market == 'HK' and stock_code.isdigit():
+                    futu_symbol = f'HK.{stock_code.zfill(5)}'
+                elif market == 'SH' and stock_code.isdigit():
+                    futu_symbol = f'SH.{stock_code}'
+                elif market == 'SZ' and stock_code.isdigit():
+                    futu_symbol = f'SZ.{stock_code}'
+                elif market == 'US':
+                    futu_symbol = f'US.{stock_code.upper()}'
+                else:
+                    futu_symbol = f'{market}.{stock_code}'
+                
+                # 创建Futu连接
+                quote_ctx = OpenQuoteContext(host='127.0.0.1', port=11111)
+                
+                try:
+                    # 计算日期范围（最近25周，约6个月）
+                    end_date = datetime.now().strftime('%Y-%m-%d')
+                    start_date = (datetime.now() - timedelta(weeks=30)).strftime('%Y-%m-%d')  # 多取几周确保有25周数据
+                    
+                    ret, data, page_req_key = quote_ctx.request_history_kline(
+                        futu_symbol,
+                        start=start_date,
+                        end=end_date,
+                        ktype=KLType.K_WEEK,
+                        autype=AuType.QFQ
+                    )
+                    
+                    if ret == RET_OK and data is not None and not data.empty:
+                        # 转换为列表格式
+                        kline_list = []
+                        for _, row in data.iterrows():
+                            kline_list.append({
+                                'time': str(row.get('time_key', '')),
+                                'open': float(row.get('open', 0)),
+                                'close': float(row.get('close', 0)),
+                                'high': float(row.get('high', 0)),
+                                'low': float(row.get('low', 0)),
+                                'volume': int(row.get('volume', 0)),
+                                'turnover': float(row.get('turnover', 0)),
+                                'change_rate': float(row.get('change_rate', 0)) if 'change_rate' in row else 0.0
+                            })
+                        
+                        # 按时间排序并返回最近25周数据
+                        kline_list.sort(key=lambda x: x['time'], reverse=False)
+                        weekly_data = kline_list[-25:] if len(kline_list) >= 25 else kline_list
+                        
+                        logger.info(f"成功获取{symbol}的周K线数据: {len(weekly_data)}条, 时间范围{start_date}到{end_date}")
+                        return weekly_data
+                    else:
+                        logger.warning(f"获取{symbol}的周K线数据失败: ret={ret}, data={data}, 时间范围{start_date}到{end_date}")
+                        return []
+                        
+                finally:
+                    quote_ctx.close()
+                    
+            except ImportError:
+                logger.warning("Futu模块不可用，使用备用周K线数据获取方法")
+                return []
+                
+        except Exception as e:
+            logger.error(f"获取{symbol}周K线数据失败: {str(e)}")
             
         return []
     
