@@ -853,7 +853,7 @@ class StockDiagnosisService:
             clean_prompt = re.sub(r'\s+', ' ', prompt).strip()
             
             payload = {
-                "model": "deepseek-chat",
+                "model": "deepseek-reasoner",
                 "messages": [
                     {
                         "role": "system",
@@ -864,8 +864,8 @@ class StockDiagnosisService:
                         "content": clean_prompt
                     }
                 ],
-                "temperature": 0.6,
-                "max_tokens": 2000,
+                "temperature": 0.4,
+                "max_tokens": 4000,
                 "response_format": {"type": "json_object"}
             }
             
@@ -877,7 +877,7 @@ class StockDiagnosisService:
                 'https://api.deepseek.com/v1/chat/completions',
                 headers=headers,
                 json=payload,
-                timeout=30
+                timeout=180
             )
             
             logger.info(f"【DeepSeek调用】API响应状态码: {response.status_code}")
@@ -892,8 +892,11 @@ class StockDiagnosisService:
                 total_tokens = usage.get('total_tokens', 0)
                 
                 logger.info(f"【DeepSeek调用】API响应成功 - 输入token: {prompt_tokens}, 输出token: {completion_tokens}, 总token: {total_tokens}")
-                logger.info(f"【DeepSeek调用】API响应成功: {json.dumps(result, ensure_ascii=False, default=str)[:500]}...")
+                #logger.info(f"【DeepSeek调用】API响应成功: {json.dumps(result, ensure_ascii=False, default=str)[:500]}...")
                 
+                logger.info(f"【DeepSeek调用】API响应成功: {json.dumps(result, ensure_ascii=False, default=str)}")
+
+                #deepseek-chat:content, deepseek-reasoner:reasoning_content
                 content = result['choices'][0]['message']['content']
                 response_tokens = len(content.encode('utf-8')) // 4  # 粗略估算响应token数量
                 logger.info(f"【DeepSeek响应】响应内容token数量 ≈ {response_tokens}")
