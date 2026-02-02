@@ -359,8 +359,8 @@ class SimpleQuantScheduler:
                     
                     # 执行量化交易
                     logger.info(f"🤖 [TRADING] 开始执行量化交易: 用户{user_id} (使用{len(user_diagnosis_results)}个诊断报告)")
-                    trading_result = execute_daily_quant_trading(user_id, user_stocks)
-                    
+                    # trading_result = execute_daily_quant_trading(user_id, user_stocks)
+                    trading_result = []
                     if trading_result and trading_result.get('success'):
                         logger.info(f"✅ [TRADING] 量化交易执行成功: 用户{user_id}")
                         logger.info(f"   ├─ 使用诊断报告: {len(user_diagnosis_results)}个")
