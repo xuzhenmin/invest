@@ -4,7 +4,7 @@
 对外暴露三个惰性初始化的单例：
   - macro_store      : MacroDataStore，宏观数据查询（PMI/CPI/利率/大宗等）
   - miaoxiang        : MiaoXiangClient，东方财富妙想智能选股 / 资讯搜索
-  - financial_client : FinancialDataClient，蚂蚁金融专业数据 API
+  - financial_client : FinancialDataClient，my金融专业数据 API
 
 两个 API 客户端在 Key 未配置时返回 None，不影响服务启动。
 """
