@@ -1,0 +1,47 @@
+const PLATFORMS = {
+  note: {
+    key: 'note',
+    label: '种草笔记',
+    shortLabel: '笔记',
+    icon: 'BookOutlined',
+    description: '图文种草风格，适合分享型社区平台',
+    formatEndpoint: '/api/content/format',
+    spinTip: '正在生成种草笔记风格内容...',
+    emptyTip: '生成素材后点击「生成笔记」',
+    generateBtnText: '生成笔记',
+    regenerateBtnText: '重新生成',
+    previewTitle: '笔记预览',
+    successMsg: '笔记内容生成完成',
+  },
+  shortVideo: {
+    key: 'shortVideo',
+    label: '短视频脚本',
+    shortLabel: '脚本',
+    icon: 'VideoCameraOutlined',
+    description: '口播/解说风格，适合短视频平台',
+    formatEndpoint: '/api/content/format',
+    spinTip: '正在生成短视频脚本...',
+    emptyTip: '生成素材后点击「生成脚本」',
+    generateBtnText: '生成脚本',
+    regenerateBtnText: '重新生成',
+    previewTitle: '脚本预览',
+    successMsg: '短视频脚本生成完成',
+  },
+  article: {
+    key: 'article',
+    label: '深度长文',
+    shortLabel: '长文',
+    icon: 'FileTextOutlined',
+    description: '专业分析风格，适合公众号/专栏',
+    formatEndpoint: '/api/content/format',
+    spinTip: '正在生成深度长文...',
+    emptyTip: '生成素材后点击「生成长文」',
+    generateBtnText: '生成长文',
+    regenerateBtnText: '重新生成',
+    previewTitle: '长文预览',
+    successMsg: '深度长文生成完成',
+  },
+};
+
+export const DEFAULT_PLATFORM = 'note';
+export default PLATFORMS;
