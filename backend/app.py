@@ -12,7 +12,10 @@ import requests
 import json
 import os
 from dotenv import load_dotenv
-import talib  # 使用 ta-lib 替代 ta
+try:
+    import talib
+except ImportError:
+    talib = None
 import sys
 sys.path.append(os.path.dirname(__file__))
 import threading
@@ -66,6 +69,20 @@ else:
 app = Flask(__name__)
 # 配置 CORS，允许所有来源
 CORS(app, resources={r"/*": {"origins": "*"}})
+
+try:
+    from service.limit_up_routes import limit_up_bp
+    app.register_blueprint(limit_up_bp)
+    logger.info("✅ limit_up 蓝图注册成功")
+except Exception as _e:
+    logger.warning(f"limit_up 蓝图注册失败: {_e}")
+
+try:
+    from service.content_ops.routes import content_bp
+    app.register_blueprint(content_bp)
+    logger.info("✅ content_ops 蓝图注册成功")
+except Exception as _e:
+    logger.warning(f"content_ops 蓝图注册失败: {_e}")
 
 # 初始化 Futu API
 try:
@@ -2382,6 +2399,49 @@ def get_stock_minute(symbol):
         logger.error(error_msg)
         logger.error(traceback.format_exc())
         return jsonify({'error': error_msg}), 500
+
+@app.route('/api/stock/minute/batch', methods=['POST'])
+def get_stock_minute_batch():
+    """批量查询分时数据，供 MinuteChartPanel 使用。POST body: {"codes": ["000001.SZ", ...]}"""
+    try:
+        codes = (request.json or {}).get('codes', [])
+        results = {}
+        for symbol in codes:
+            try:
+                code_parts = symbol.split('.')
+                if len(code_parts) != 2:
+                    results[symbol] = []
+                    continue
+                stock_code, market = code_parts[0], code_parts[1].upper()
+                data = []
+                if market in ['SH', 'SZ']:
+                    try:
+                        df = ak.stock_zh_a_hist_min_em(symbol=stock_code, period='1')
+                        if not df.empty:
+                            df = df.rename(columns={'时间': 'time', '收盘': 'price', '成交量': 'volume'})
+                            data = df[['time', 'price', 'volume']].fillna('').to_dict(orient='records')
+                    except Exception:
+                        try:
+                            prefix = 'sh' if market == 'SH' or stock_code.startswith('6') else 'sz'
+                            df = ak.stock_zh_a_minute(symbol=prefix + stock_code, period='1')
+                            if not df.empty:
+                                df = df.rename(columns={'day': 'time', 'close': 'price', 'volume': 'volume'})
+                                data = df[['time', 'price', 'volume']].fillna('').to_dict(orient='records')
+                        except Exception:
+                            data = []
+                elif market == 'HK':
+                    try:
+                        from quant import get_hk_minute_data
+                        data = get_hk_minute_data(symbol, quote_ctx)
+                    except Exception:
+                        data = []
+                results[symbol] = data
+            except Exception:
+                results[symbol] = []
+        return jsonify(results)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 @app.route('/api/stock/<symbol>/financials')
 def get_stock_financials_api(symbol):
