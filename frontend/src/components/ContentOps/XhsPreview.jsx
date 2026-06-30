@@ -3,7 +3,7 @@ import { Button, Empty, message, Tag } from 'antd';
 import { CopyOutlined, EditOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import VerificationReport from './VerificationReport';
 
-const XhsPreview = ({ xhsData, loading, onFormat, onVerify, verifyLoading, verificationResult, platform }) => {
+const XhsPreview = ({ xhsData, loading, onFormat, onVerify, verifyLoading, verificationResult, platform, showActions = true }) => {
   const pf = platform || {};
   if (!xhsData) {
     return (
@@ -104,22 +104,24 @@ const XhsPreview = ({ xhsData, loading, onFormat, onVerify, verifyLoading, verif
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginBottom: 12 }}>
-        <Button type="primary" icon={<CopyOutlined />} onClick={handleCopyAll}>
-          复制全文
-        </Button>
-        {onVerify && (
-          <Button icon={<SafetyCertificateOutlined />}
-            loading={verifyLoading} onClick={onVerify}
-            style={{ borderColor: '#52c41a', color: '#52c41a' }}>
-            验证
+      {showActions && (
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginBottom: 12 }}>
+          <Button type="primary" icon={<CopyOutlined />} onClick={handleCopyAll}>
+            复制全文
           </Button>
-        )}
-        <Button ghost icon={<EditOutlined />} loading={loading} onClick={onFormat}
-          style={{ borderColor: '#313a4d', color: '#d0d0d0' }}>
-          {pf.regenerateBtnText || '重新生成'}
-        </Button>
-      </div>
+          {onVerify && (
+            <Button icon={<SafetyCertificateOutlined />}
+              loading={verifyLoading} onClick={onVerify}
+              style={{ borderColor: '#52c41a', color: '#52c41a' }}>
+              验证
+            </Button>
+          )}
+          <Button ghost icon={<EditOutlined />} loading={loading} onClick={onFormat}
+            style={{ borderColor: '#313a4d', color: '#d0d0d0' }}>
+            {pf.regenerateBtnText || '重新生成'}
+          </Button>
+        </div>
+      )}
 
       {(verificationResult || verifyLoading) && (
         <div style={{
