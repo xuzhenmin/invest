@@ -2365,7 +2365,10 @@ def get_stock_minute(symbol):
 
 @app.route('/api/stock/minute/batch', methods=['POST'])
 def get_stock_minute_batch():
-    """批量查询分时数据，统一通过 Futu OpenD。POST body: {"codes": ["000001.SZ", ...]}"""
+    """批量查询分时数据，统一通过 Futu OpenD。POST body: {"codes": ["000001.SZ", ...]}
+    响应结构: { "000001.SZ": { points: [...], prev_close: float|null, limit_price: float|null } }
+    一字板/停牌股票 points 为空，limit_price 为当日涨停价（来自快照）。
+    """
     try:
         body = request.get_json(force=True, silent=True) or {}
         codes = body.get('codes', [])
@@ -2374,11 +2377,40 @@ def get_stock_minute_batch():
             try:
                 code_parts = symbol.split('.')
                 if len(code_parts) != 2:
-                    results[symbol] = []
+                    results[symbol] = {'points': [], 'prev_close': None, 'limit_price': None}
                     continue
                 results[symbol] = get_futu_minute_data(symbol, quote_ctx)
+                results[symbol]['limit_price'] = None
             except Exception:
-                results[symbol] = []
+                results[symbol] = {'points': [], 'prev_close': None, 'limit_price': None}
+
+        # 对 points 为空的股票，调快照取昨收和当前价（一字板/停牌兜底）
+        empty_symbols = [s for s in codes if not results.get(s, {}).get('points')]
+        if empty_symbols:
+            futu_symbols = []
+            sym_map = {}
+            for s in empty_symbols:
+                parts = s.split('.')
+                if len(parts) == 2:
+                    code, mkt = parts
+                    futu_sym = f'{mkt.upper()}.{code}'
+                    futu_symbols.append(futu_sym)
+                    sym_map[futu_sym] = s
+            try:
+                snap = batch_market_snapshot(futu_symbols, quote_ctx)
+                for futu_sym, orig_sym in sym_map.items():
+                    row = snap.get(futu_sym)
+                    if not row:
+                        continue
+                    last = row.get('last_price')
+                    prev = row.get('prev_close_price')
+                    if last:
+                        results[orig_sym]['limit_price'] = float(last)
+                    if prev and not results[orig_sym].get('prev_close'):
+                        results[orig_sym]['prev_close'] = float(prev)
+            except Exception as e:
+                logger.warning(f'[minute/batch] snapshot fallback failed: {e}')
+
         return jsonify(results)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
