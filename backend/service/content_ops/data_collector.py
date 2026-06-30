@@ -143,13 +143,46 @@ class ContentDataCollector:
         return result
 
     def collect_enriched_sector_context(self, date: str) -> Dict[str, Any]:
-        """采集增强版行业素材：Top5热门板块(含资金流) + 板块池分析摘要 + 轮动上下文 + 事件"""
+        """采集增强版行业素材：Top5热门板块(含资金流) + 板块池分析摘要 + 轮动上下文 + 事件
+        + 妙想实时板块行情（股价聚合）+ 妙想当日新闻（含日期校验）"""
         result = {
             'hot_plates_top5': [],
             'sector_pool_analyses': [],
             'sector_rotation_context': '',
             'sector_events': [],
+            'mx_sector_performance': [],   # 妙想: 申万行业涨跌幅实时聚合
+            'mx_sector_news': [],          # 妙想: 当日板块新闻（日期已校验）
         }
+
+        # ── 妙想: 实时板块行情（聚合今日涨幅前200股 → 申万一级行业排名）──
+        try:
+            def _fetch_mx_sector_perf():
+                from service.datapip.miaoxiang_client import MiaoXiangClient
+                mx = MiaoXiangClient()
+                return mx.get_sector_performance(top_n=15)
+
+            perf = _run_with_timeout(_fetch_mx_sector_perf, timeout=20, default=[])
+            result['mx_sector_performance'] = perf or []
+            if perf:
+                logger.info(f"[ContentCollector] 妙想板块行情: Top3={[p['sector'] for p in perf[:3]]}")
+        except Exception as e:
+            logger.warning(f"[ContentCollector] 妙想板块行情获取失败: {e}")
+
+        # ── 妙想: 当日板块新闻（日期校验确保是今日数据）──
+        try:
+            def _fetch_mx_sector_news():
+                from service.datapip.miaoxiang_client import MiaoXiangClient
+                mx = MiaoXiangClient()
+                return mx.get_sector_news_today()
+
+            news = _run_with_timeout(_fetch_mx_sector_news, timeout=20, default=[])
+            result['mx_sector_news'] = news or []
+            today_count = len(result['mx_sector_news'])
+            logger.info(f"[ContentCollector] 妙想板块新闻: 当日 {today_count} 条")
+            if today_count == 0:
+                logger.warning("[ContentCollector] 妙想板块新闻: 未获取到当日数据，可能非交易日")
+        except Exception as e:
+            logger.warning(f"[ContentCollector] 妙想板块新闻获取失败: {e}")
 
         try:
             from service.datapip.financial_data_client import FinancialDataClient
