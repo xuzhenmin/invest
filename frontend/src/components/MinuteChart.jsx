@@ -5,13 +5,28 @@ const PAD = { t: 6, b: 14, l: 2, r: 2 };
 const iW = W - PAD.l - PAD.r;
 const iH = H - PAD.t - PAD.b;
 
-export default function MinuteChart({ stock, points, prevClose, index }) {
+// 一字板：合成全天平线数据（09:30 ~ 15:00，每分钟一个点，共241个点）
+function buildFlatPoints(price) {
+  const points = [];
+  for (let i = 0; i <= 240; i++) {
+    const totalMin = 9 * 60 + 30 + (i <= 120 ? i : i + 90); // 跳过11:30-13:00午休
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    points.push({ price, _flat: true, _label: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}` });
+  }
+  return points;
+}
+
+export default function MinuteChart({ stock, points, prevClose, limitPrice, index }) {
   const pathRef = useRef(null);
 
-  const prices = (points || []).map(p => p.price);
+  const isFlat = !points?.length && limitPrice != null;
+  const displayPoints = isFlat ? buildFlatPoints(limitPrice) : (points || []);
+
+  const prices = displayPoints.map(p => p.price);
   const hasData = prices.length >= 2;
 
-  const refPrice = prevClose ?? prices[0] ?? 0;
+  const refPrice = prevClose ?? (!isFlat && prices[0]) ?? limitPrice ?? 0;
 
   const allPrices = refPrice ? [...prices, refPrice] : prices;
   const minP = hasData ? Math.min(...allPrices) : 0;
@@ -23,13 +38,13 @@ export default function MinuteChart({ stock, points, prevClose, index }) {
 
   const refY = refPrice ? toY(refPrice) : PAD.t + iH / 2;
   const lastPrice = prices[prices.length - 1] ?? refPrice;
-  const isUp = lastPrice >= refPrice;
+  const isUp = lastPrice >= (refPrice || 0);
   const changePct = refPrice ? ((lastPrice - refPrice) / refPrice * 100).toFixed(2) : '0.00';
   const color = isUp ? '#ff5566' : '#2ed573';
   const gradId = `g${stock.stock_code.replace(/[.]/g, '')}`;
 
   const dLine = hasData
-    ? points.map((p, i) => `${i === 0 ? 'M' : 'L'}${toX(i).toFixed(1)},${toY(p.price).toFixed(1)}`).join(' ')
+    ? displayPoints.map((p, i) => `${i === 0 ? 'M' : 'L'}${toX(i).toFixed(1)},${toY(p.price).toFixed(1)}`).join(' ')
     : '';
   const dFill = hasData
     ? `${dLine} L${(PAD.l + iW).toFixed(1)},${(PAD.t + iH).toFixed(1)} L${PAD.l},${(PAD.t + iH).toFixed(1)} Z`
@@ -37,7 +52,7 @@ export default function MinuteChart({ stock, points, prevClose, index }) {
 
   useEffect(() => {
     const path = pathRef.current;
-    if (!path || !hasData) return;
+    if (!path || !hasData || isFlat) return;
 
     const len = path.getTotalLength();
     path.style.strokeDasharray = len;
@@ -61,17 +76,20 @@ export default function MinuteChart({ stock, points, prevClose, index }) {
   }, []);
 
   return (
-    <div style={S.card}>
+    <div style={{ ...S.card, ...(isFlat ? S.cardFlat : {}) }}>
       <div style={S.header}>
         <span style={S.name}>{stock.stock_name}</span>
-        <span style={{ ...S.change, color }}>
-          {isUp && hasData ? '+' : ''}{hasData ? `${changePct}%` : '--'}
-        </span>
+        {isFlat
+          ? <span style={S.flatBadge}>一字板</span>
+          : <span style={{ ...S.change, color }}>
+              {isUp && hasData ? '+' : ''}{hasData ? `${changePct}%` : '--'}
+            </span>
+        }
       </div>
       <svg width={W} height={H} style={{ display: 'block', overflow: 'visible' }}>
         <defs>
           <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={color} stopOpacity="0.22" />
+            <stop offset="0%" stopColor={color} stopOpacity={isFlat ? 0.1 : 0.22} />
             <stop offset="100%" stopColor={color} stopOpacity="0" />
           </linearGradient>
         </defs>
@@ -87,9 +105,10 @@ export default function MinuteChart({ stock, points, prevClose, index }) {
               d={dLine}
               fill="none"
               stroke={color}
-              strokeWidth="1.4"
+              strokeWidth={isFlat ? 1 : 1.4}
               strokeLinejoin="round"
               strokeLinecap="round"
+              strokeDasharray={isFlat ? '4,3' : undefined}
             />
           </>
         )}
@@ -114,6 +133,10 @@ const S = {
     display: 'flex',
     flexDirection: 'column',
   },
+  cardFlat: {
+    border: '1px solid rgba(255,85,102,0.2)',
+    background: 'rgba(255,85,102,0.03)',
+  },
   header: {
     display: 'flex',
     justifyContent: 'space-between',
@@ -133,5 +156,14 @@ const S = {
     fontSize: 10,
     fontWeight: 700,
     fontVariantNumeric: 'tabular-nums',
+  },
+  flatBadge: {
+    fontSize: 8,
+    color: '#ff5566',
+    border: '1px solid rgba(255,85,102,0.4)',
+    borderRadius: 3,
+    padding: '1px 4px',
+    letterSpacing: '0.5px',
+    background: 'rgba(255,85,102,0.08)',
   },
 };
