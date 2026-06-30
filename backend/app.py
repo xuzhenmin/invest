@@ -22,10 +22,10 @@ import threading
 import time
 
 # 强制导入quant.py相关方法，确保batch_market_snapshot可用
-from quant import get_stock_list, get_stock_capital_flow, get_stock_financials, quant_get_stock_kline, get_stock_news, batch_market_snapshot, get_hk_minute_data, analyze_fundamental, load_latest_smart_monitor_signals, load_all_smart_monitor_signals, get_order_book, get_rt_ticker
+from quant import get_stock_list, get_stock_capital_flow, get_stock_financials, quant_get_stock_kline, get_stock_news, batch_market_snapshot, get_hk_minute_data, get_futu_minute_data, analyze_fundamental, load_latest_smart_monitor_signals, load_all_smart_monitor_signals, get_order_book, get_rt_ticker
 
 try:
-    from quant import get_stock_list, get_stock_capital_flow, get_stock_financials, quant_get_stock_kline, get_stock_news, batch_market_snapshot, get_hk_minute_data
+    from quant import get_stock_list, get_stock_capital_flow, get_stock_financials, quant_get_stock_kline, get_stock_news, batch_market_snapshot, get_hk_minute_data, get_futu_minute_data
 except ImportError:
     get_stock_list = None
     get_stock_capital_flow = None
@@ -2349,49 +2349,12 @@ def get_stock_data_batch():
 
 @app.route('/api/stock/<symbol>/minute')
 def get_stock_minute(symbol):
-    """
-    查询分时数据，支持A股、港股、美股。返回格式：[{time, price, volume}]
-    """
+    """查询分时数据，统一通过 Futu OpenD。返回格式：[{time, price, volume}]"""
     try:
-        import akshare as ak
-        import pandas as pd
         code_parts = symbol.split('.')
         if len(code_parts) != 2:
-            return jsonify({'error': 'Invalid stock code format. Expected format: CODE.MARKET (e.g., 00700.HK)'}), 400
-        stock_code = code_parts[0]
-        market = code_parts[1].upper()
-        data = []
-        if market in ['SH', 'SZ']:
-            # 优先用东方财富接口
-            try:
-                # 东方财富接口需要无前缀代码和market_code
-                market_code = '1' if market == 'SH' or stock_code.startswith('6') else '0'
-                df = ak.stock_zh_a_hist_min_em(symbol=stock_code, period='1')
-                if not df.empty:
-                    df = df.rename(columns={'时间': 'time', '收盘': 'price', '成交量': 'volume'})
-                    data = df[['time', 'price', 'volume']].fillna('').to_dict(orient='records')
-            except Exception as e:
-                # 降级用新浪接口（需sh/sz前缀）
-                try:
-                    sina_code = ('sh' if market == 'SH' or stock_code.startswith('6') else 'sz') + stock_code
-                    df = ak.stock_zh_a_minute(symbol=sina_code, period='1')
-                    if not df.empty:
-                        # 新浪接口字段：day, open, high, low, close, volume
-                        df = df.rename(columns={'day': 'time', 'close': 'price', 'volume': 'volume'})
-                        data = df[['time', 'price', 'volume']].fillna('').to_dict(orient='records')
-                except Exception as e2:
-                    data = []
-        elif market == 'HK':
-            try:
-                from quant import get_hk_minute_data
-                data = get_hk_minute_data(symbol, quote_ctx)
-            except Exception as e:
-                data = []
-        elif market == 'US':
-            # 美股分时（akshare暂不支持1m，返回空）
-            data = []
-        else:
-            data = []
+            return jsonify({'error': 'Invalid stock code format. Expected format: CODE.MARKET'}), 400
+        data = get_futu_minute_data(symbol, quote_ctx)
         return jsonify(data)
     except Exception as e:
         import traceback
@@ -2402,9 +2365,10 @@ def get_stock_minute(symbol):
 
 @app.route('/api/stock/minute/batch', methods=['POST'])
 def get_stock_minute_batch():
-    """批量查询分时数据，供 MinuteChartPanel 使用。POST body: {"codes": ["000001.SZ", ...]}"""
+    """批量查询分时数据，统一通过 Futu OpenD。POST body: {"codes": ["000001.SZ", ...]}"""
     try:
-        codes = (request.json or {}).get('codes', [])
+        body = request.get_json(force=True, silent=True) or {}
+        codes = body.get('codes', [])
         results = {}
         for symbol in codes:
             try:
@@ -2412,30 +2376,7 @@ def get_stock_minute_batch():
                 if len(code_parts) != 2:
                     results[symbol] = []
                     continue
-                stock_code, market = code_parts[0], code_parts[1].upper()
-                data = []
-                if market in ['SH', 'SZ']:
-                    try:
-                        df = ak.stock_zh_a_hist_min_em(symbol=stock_code, period='1')
-                        if not df.empty:
-                            df = df.rename(columns={'时间': 'time', '收盘': 'price', '成交量': 'volume'})
-                            data = df[['time', 'price', 'volume']].fillna('').to_dict(orient='records')
-                    except Exception:
-                        try:
-                            prefix = 'sh' if market == 'SH' or stock_code.startswith('6') else 'sz'
-                            df = ak.stock_zh_a_minute(symbol=prefix + stock_code, period='1')
-                            if not df.empty:
-                                df = df.rename(columns={'day': 'time', 'close': 'price', 'volume': 'volume'})
-                                data = df[['time', 'price', 'volume']].fillna('').to_dict(orient='records')
-                        except Exception:
-                            data = []
-                elif market == 'HK':
-                    try:
-                        from quant import get_hk_minute_data
-                        data = get_hk_minute_data(symbol, quote_ctx)
-                    except Exception:
-                        data = []
-                results[symbol] = data
+                results[symbol] = get_futu_minute_data(symbol, quote_ctx)
             except Exception:
                 results[symbol] = []
         return jsonify(results)
