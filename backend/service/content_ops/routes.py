@@ -38,7 +38,7 @@ def format_content():
     """阶段2：将素材转写为指定平台内容"""
     _ensure_init()
     try:
-        body = request.get_json(force=True) or {}
+        body = request.get_json(force=True, silent=True) or {}
         content_id = body.get('content_id')
         if not content_id:
             return jsonify({'success': False, 'message': '缺少 content_id'}), 400
@@ -63,7 +63,7 @@ def verify_content():
     """阶段3：对内容进行事实核验"""
     _ensure_init()
     try:
-        body = request.get_json(force=True) or {}
+        body = request.get_json(force=True, silent=True) or {}
         content_id = body.get('content_id')
         if not content_id:
             return jsonify({'success': False, 'message': '缺少 content_id'}), 400
