@@ -25,7 +25,7 @@ def collect():
     """触发涨停数据采集（可指定日期）"""
     _ensure_init()
     try:
-        body = request.get_json(force=True) or {}
+        body = request.get_json(force=True, silent=True) or {}
         date = body.get('date') or None
         result = _service.collect_today(date)
         return jsonify({'success': True, 'data': result})
@@ -65,7 +65,7 @@ def backfill():
     """回补历史数据"""
     _ensure_init()
     try:
-        body = request.get_json(force=True) or {}
+        body = request.get_json(force=True, silent=True) or {}
         days = body.get('days', 10)
         result = _service.backfill(days)
         return jsonify({'success': True, 'data': result})
