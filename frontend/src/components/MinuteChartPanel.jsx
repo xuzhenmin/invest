@@ -13,8 +13,26 @@ if (typeof document !== 'undefined' && !document.getElementById('mcp-style')) {
       from { opacity: 0; transform: translateX(24px); }
       to   { opacity: 1; transform: translateX(0); }
     }
+    @keyframes slideUpDrawer {
+      from { opacity: 0; transform: translateY(100%); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeInOverlay {
+      from { opacity: 0; }
+      to   { opacity: 1; }
+    }
   `;
   document.head.appendChild(style);
+}
+
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640);
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth < 640);
+    window.addEventListener('resize', handler);
+    return () => window.removeEventListener('resize', handler);
+  }, []);
+  return isMobile;
 }
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001';
@@ -24,6 +42,7 @@ export default function MinuteChartPanel({ sector, date, onClose }) {
   const [loading, setLoading] = useState(false);
   const [animKey, setAnimKey] = useState(0);
   const [gifProgress, setGifProgress] = useState(null);
+  const isMobile = useIsMobile();
 
   const fetchData = useCallback(async (stocks, date) => {
     setLoading(true);
@@ -53,9 +72,16 @@ export default function MinuteChartPanel({ sector, date, onClose }) {
     fetchData(sector.stocks, date);
   }, [sector, date, fetchData]);
 
+  const panelStyle = isMobile ? S.panelMobile : S.panelDesktop;
+
   return (
-    <div style={S.panel}>
-      <div style={S.topBeam} />
+    <>
+      {isMobile && <div style={S.overlay} onClick={onClose} />}
+      <div style={panelStyle}>
+      {isMobile
+        ? <div style={S.dragHandle} />
+        : <div style={S.topBeam} />
+      }
 
       <div style={S.head}>
         <div style={S.headIcon}><StockOutlined /></div>
@@ -121,25 +147,56 @@ export default function MinuteChartPanel({ sector, date, onClose }) {
         </div>
       )}
     </div>
+    </>
   );
 }
 
+const panelBase = {
+  background: 'linear-gradient(160deg, #080f1c 0%, #0b1520 100%)',
+  border: '1px solid rgba(50,110,190,0.2)',
+  overflow: 'hidden',
+  boxShadow: '0 16px 48px rgba(0,0,0,0.8)',
+  display: 'flex',
+  flexDirection: 'column',
+  zIndex: 200,
+};
+
 const S = {
-  panel: {
+  panelDesktop: {
+    ...panelBase,
     position: 'fixed',
     left: 'calc(50% + 274px)',
     top: '18vh',
     width: 332,
     maxHeight: '68vh',
-    background: 'linear-gradient(160deg, #080f1c 0%, #0b1520 100%)',
-    border: '1px solid rgba(50,110,190,0.2)',
     borderRadius: 12,
-    overflow: 'hidden',
-    boxShadow: '0 16px 48px rgba(0,0,0,0.8)',
-    display: 'flex',
-    flexDirection: 'column',
-    zIndex: 100,
     animation: 'slideInPanel 0.22s ease-out',
+  },
+  panelMobile: {
+    ...panelBase,
+    position: 'fixed',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100%',
+    maxHeight: '72vh',
+    borderRadius: '14px 14px 0 0',
+    borderBottom: 'none',
+    animation: 'slideUpDrawer 0.28s ease-out',
+  },
+  overlay: {
+    position: 'fixed',
+    inset: 0,
+    background: 'rgba(0,0,0,0.55)',
+    zIndex: 199,
+    animation: 'fadeInOverlay 0.2s ease-out',
+  },
+  dragHandle: {
+    width: 36, height: 4,
+    background: 'rgba(255,255,255,0.15)',
+    borderRadius: 2,
+    margin: '10px auto 6px',
+    flexShrink: 0,
   },
   topBeam: {
     height: 1,
