@@ -97,7 +97,7 @@ class ContentOpsService:
         logger.info("[ContentOps] 步骤3/3: 5路并行生成素材...")
         gen_map = {
             'market_overview': (self._gen_market_overview, (market, today)),
-            'hot_sectors': (self._gen_hot_industries, (market, sector, today)),
+            'hot_boards': (self._gen_hot_boards, (market, sector, today)),
             'hot_topics': (self._gen_hot_topics, (market, sector, today)),
             'knowledge_seed': (self._gen_knowledge_seed, (market, sector, today)),
             'sector_review': (self._gen_sector_review, (prev_mentions, sector, today)),
@@ -122,8 +122,12 @@ class ContentOpsService:
                 except Exception as e:
                     logger.error(f"[ContentOps] {name} 重试仍失败: {e}")
 
+        core_keys = ['market_overview', 'hot_boards', 'hot_topics']
+        if all(raw_material.get(k) is None for k in core_keys):
+            raise Exception("素材生成失败：核心模块全部为空，请检查 DEEPSEEK_API_KEY 配置")
+
         content_id = self._save_content(today, 'raw', raw_material)
-        self._save_sector_mentions(content_id, today, raw_material.get('hot_sectors', []),
+        self._save_sector_mentions(content_id, today, raw_material.get('hot_boards', []),
                                    sector.get('hot_plates_top5', []))
         raw_material['id'] = content_id
         raw_material['content_date'] = today
@@ -246,54 +250,173 @@ class ContentOpsService:
         )
         return self._call_deepseek(prompt, system, temperature=0.5, max_tokens=3000)
 
-    def _gen_hot_industries(self, market: dict, sector: dict, date: str) -> list:
-        data_summary = json.dumps({
-            'date': date,
-            'hot_plates_top5': sector.get('hot_plates_top5', []),
-            'sector_pool_analyses': sector.get('sector_pool_analyses', []),
-            'sector_rotation_context': sector.get('sector_rotation_context', ''),
-            'sector_events': sector.get('sector_events', [])[:10],
-            'market_indices': market.get('index_snapshot', {}),
-        }, ensure_ascii=False, default=str)
+    def _gen_hot_boards(self, market: dict, sector: dict, date: str) -> list:
+        # 当日板块新闻（已校验为今日数据，是识别具体热点板块最准的来源）
+        mx_news = sector.get('mx_sector_news', [])
+        news_block = ''
+        if mx_news:
+            snippets = []
+            for n in mx_news[:8]:
+                snippets.append(
+                    f"[{n['source']} {n['date'][:16]}] {n['title']}\n{n['content'][:300]}"
+                )
+            news_block = '\n\n'.join(snippets)
 
-        prompt = f"""请基于以下{date}的行业数据，输出5个热门行业的深度分析素材。
+        # 申万行业实时涨跌幅（基于股价聚合，用于补充大行业方向参考）
+        mx_perf = sector.get('mx_sector_performance', [])
+        perf_block = ''
+        if mx_perf:
+            lines = [f"{p['sector']} 平均涨幅{p['avg_change_pct']:+.2f}% ({p['stock_count']}只)"
+                     for p in mx_perf[:8]]
+            perf_block = '\n'.join(lines)
 
-【数据汇总】
-{data_summary}
+        prompt = f"""你是一个专业的板块分析师。请基于以下{date}的真实数据，识别并分析今日A股市场中最热门的5个**概念/主题板块**（如WiFi6、MiniLED、CPO、半导体、玻璃基板等具体板块，不是宽泛行业分类）。
 
-请严格返回以下JSON格式（数组，5个元素）:
-{{
-  "sectors": [
-    {{
-      "sector_name": "行业名称",
-      "change_pct": "+2.3%",
-      "turnover": "成交额描述（如12.5亿）",
-      "capital_flow": "资金流向描述（如主力净流入2.3亿/主力净流出1.5亿）",
-      "driver": "驱动因素深度分析（2-3句，结合新闻事件和行业逻辑）",
-      "rotation_context": "板块轮动位置描述",
-      "related_stocks": ["代表性个股(+3.1%)", "个股2(+2.8%)"],
-      "life_connection": "这个行业变化和普通人日常生活的关联",
-      "pool_analysis": "如果该行业有深度分析，摘要其核心结论；否则为null"
-    }}
-  ]
-}}
+【今日板块行情新闻】（已校验为{date}当日数据，是主要依据）
+{news_block or '暂无当日新闻'}
 
-要求:
-1. 优先分析 hot_plates_top5 中的5个行业
-2. capital_flow 必须基于实际资金流向数据描述，无数据则标注"暂无资金数据"
-3. driver 要结合 sector_events 中的相关事件深度分析驱动因素
-4. 所有数据必须基于提供的原始数据"""
+【申万行业涨跌参考】（辅助背景，按平均涨幅前列）
+{perf_block or '暂无数据'}
 
-        system = (
-            "你是一个专业的行业分析师，负责输出客观、深度的行业分析素材。"
-            "请基于提供的原始数据做深度分析。请严格返回JSON。"
-        )
-        result = self._call_deepseek(prompt, system, temperature=0.5, max_tokens=4000)
+请严格返回JSON数组（5个元素）:
+[
+  {{
+    "sector_name": "具体板块名称（如WiFi6、MiniLED概念、CPO概念等）",
+    "change_pct": "今日涨幅（从新闻中提取真实数据，如+6.12%）",
+    "turnover": "成交额（从新闻提取，无则填null）",
+    "capital_flow": "资金流向描述（有数据则填，无则填null）",
+    "driver": "板块上涨驱动因素（2-3句，结合新闻事件和产业逻辑）",
+    "rotation_context": "该板块在今日市场轮动中的位置（领涨/跟涨/补涨/分歧等）",
+    "related_stocks": ["代表性个股和涨幅，从新闻中提取"],
+    "life_connection": "这个板块和普通人日常生活或消费的关联",
+    "pool_analysis": null
+  }}
+]
+
+要求：
+1. 选取今日真正活跃的**具体概念/主题板块**，不要选"电子"、"计算机"等申万一级行业
+2. change_pct 必须从新闻中提取真实数据，不可编造
+3. related_stocks 从新闻中提取今日该板块领涨个股和具体涨幅
+4. 直接返回JSON数组，不要包裹在对象中"""
+
+        system = "你是专业板块分析师，从新闻中提取今日热点板块并做深度分析。请严格返回JSON数组。"
+        result = self._call_deepseek(prompt, system, temperature=0.4, max_tokens=4000)
         if isinstance(result, dict) and 'sectors' in result:
-            return result['sectors']
-        if isinstance(result, list):
-            return result
-        return [result] if result else []
+            raw_boards = result['sectors']
+        elif isinstance(result, dict) and 'boards' in result:
+            raw_boards = result['boards']
+        elif isinstance(result, list):
+            raw_boards = result
+        else:
+            raw_boards = []
+
+        return self._enrich_and_dedup_boards(raw_boards)
+
+    def _enrich_and_dedup_boards(self, boards: list) -> list:
+        """去重 + 对 change_pct 为空/非数字的板块补全真实行情
+        优先用 Futu 官方板块代码查快照，fallback 到 MiaoXiang 成分股均值"""
+        import re
+
+        def _normalize_name(name: str) -> str:
+            name = name or ''
+            name = re.sub(r'[\(（][^)\）]*[\)）]', '', name)
+            name = name.replace('板块', '').replace('概念', '').replace(' ', '').strip()
+            return name.upper()
+
+        def _is_real_pct(v) -> bool:
+            if not v or str(v).lower() in ('null', 'none', 'n/a', ''):
+                return False
+            return bool(re.match(r'^[+-]?\d+\.?\d*%?$', str(v).strip()))
+
+        # 去重：按规范化名称保留第一个
+        seen, deduped = set(), []
+        for b in boards:
+            key = _normalize_name(b.get('sector_name', ''))
+            if key and key not in seen:
+                seen.add(key)
+                deduped.append(b)
+
+        need_enrich = [b for b in deduped if not _is_real_pct(b.get('change_pct'))]
+
+        # ── Step 1: Futu 官方板块代码 → 快照（用于所有板块，Futu 收盘数据更权威）──
+        futu_snapshot = {}
+        try:
+            from quant import get_concept_board_snapshot
+            # 所有板块都查 Futu（覆盖 DeepSeek 可能提取的中午数据）
+            all_names = [b.get('sector_name', '') for b in deduped]
+            futu_snapshot = get_concept_board_snapshot(all_names) or {}
+            logger.info(f"[ContentOps] Futu板块快照命中: {list(futu_snapshot.keys())}")
+        except Exception as e:
+            logger.warning(f"[ContentOps] Futu板块快照查询失败: {e}")
+
+        for b in deduped:
+            name = b.get('sector_name', '')
+            snap = futu_snapshot.get(name)
+            if not snap:
+                continue
+            chg = snap.get('change_pct')
+            if chg is not None:
+                b['change_pct'] = f"{chg:+.2f}%"
+            turnover = snap.get('turnover')
+            if turnover and not b.get('turnover'):
+                if turnover >= 1e8:
+                    b['turnover'] = f"{round(turnover / 1e8, 1)}亿"
+                else:
+                    b['turnover'] = f"{round(turnover / 1e4, 0):.0f}万"
+            rc = snap.get('raise_count')
+            fc = snap.get('fall_count')
+            if rc is not None and fc is not None and not b.get('rotation_context'):
+                b['rotation_context'] = f"{rc}涨{fc}跌"
+
+        # ── Step 2: Futu 未命中且仍缺 change_pct 的 → MiaoXiang 成分股均值（fallback）──
+        still_need = [b for b in deduped
+                      if b.get('sector_name', '') not in futu_snapshot
+                      and not _is_real_pct(b.get('change_pct'))]
+        if still_need:
+            try:
+                from service.datapip.miaoxiang_client import MiaoXiangClient
+
+                def _safe_chg(v):
+                    try:
+                        return float(v) if v not in (None, '', 'N/A') else 0.0
+                    except (TypeError, ValueError):
+                        return 0.0
+
+                for b in still_need:
+                    name = b.get('sector_name', '')
+                    try:
+                        mx = MiaoXiangClient()
+                        stocks = mx.select_stocks(f"今日{name}的股票")
+                        if not stocks:
+                            continue
+                        normalized = []
+                        for s in stocks:
+                            if s and isinstance(s, dict):
+                                try:
+                                    normalized.append(mx.normalize_stock_record(s))
+                                except Exception:
+                                    pass
+                        changes = [_safe_chg(s.get('change_pct')) for s in normalized if s]
+                        changes = [c for c in changes if c != 0.0]
+                        if changes:
+                            avg = round(sum(changes) / len(changes), 2)
+                            b['change_pct'] = f"{avg:+.2f}%"
+                        if not b.get('related_stocks'):
+                            top = sorted(
+                                [s for s in normalized if s],
+                                key=lambda s: _safe_chg(s.get('change_pct')),
+                                reverse=True
+                            )[:5]
+                            b['related_stocks'] = [
+                                f"{s['name']}({s.get('change_pct', '')}%)"
+                                for s in top if s and s.get('name')
+                            ]
+                    except Exception as e:
+                        logger.warning(f"[ContentOps] MiaoXiang板块补查失败 {name}: {e}")
+            except Exception as e:
+                logger.warning(f"[ContentOps] MiaoXiang fallback失败: {e}")
+
+        return deduped
 
     def _gen_hot_topics(self, market: dict, sector: dict, date: str) -> list:
         data_summary = json.dumps({
@@ -464,7 +587,7 @@ class ContentOpsService:
         user_block = f"\n【用户自定义要求】\n{user_instructions}\n" if user_instructions else ""
         goal_block = self.GOAL_STRATEGIES.get(goal, '') if goal else ''
 
-        all_modules = modules or ['market_overview', 'sector_review', 'hot_sectors', 'hot_topics', 'knowledge_seed']
+        all_modules = modules or ['market_overview', 'sector_review', 'hot_boards', 'hot_topics', 'knowledge_seed']
 
         structure_parts = ["""1. 钩子开头（1-2句）：必须制造"想点进来看"的冲动。从以下角度中选一个最匹配今日数据的：
    - 对比冲击型："一边是XX暴涨3%，一边是XX暴跌4%——今天的A股就是两个平行世界"
@@ -479,12 +602,12 @@ class ContentOpsService:
         if 'market_overview' in all_modules:
             structure_parts.append(f'{idx}. 今日市场速写（1-2段）：不要罗列指数涨跌，用一个对比或比喻描述今天市场的"气质"')
             idx += 1
-        if 'hot_sectors' in all_modules:
-            structure_parts.append(f"""{idx}. 行业故事（2-3段，核心段落）：选 1-2 个最有话题性的行业深度展开。必须做到：
+        if 'hot_boards' in all_modules:
+            structure_parts.append(f"""{idx}. 热点板块故事（2-3段，核心段落）：选 1-2 个最有话题性的具体板块（如WiFi6、MiniLED等概念板块）深度展开。必须做到：
    - 抛出一个有争议的个人判断，并明确说"我可能错了，但我觉得..."
    - 用"因为→所以→但是"的结构制造转折感，不要一路看多
    - 必须关联一个普通人能感知的生活场景
-   - 在行业分析段尾抛出一个选择题式提问""")
+   - 在板块分析段尾抛出一个选择题式提问""")
             idx += 1
         if 'hot_topics' in all_modules:
             structure_parts.append(f'{idx}. 热点话题（1段）：选最有争议性或与普通人最相关的话题')
@@ -556,7 +679,7 @@ class ContentOpsService:
 【脚本结构】
 1. 开场hook（1-2句，3秒抓注意力）：用反问或意外事实开场
 2. 今天市场发生了啥（2-3句，15-20秒）：大盘表现+最有意思的现象
-3. 行业故事（3-4句，20-30秒）：从热门行业中挑1-2个最有话题性的，关联日常生活
+3. 热点板块故事（3-4句，20-30秒）：从热门板块中挑1-2个最有话题性的具体板块，关联日常生活
 4. 知识彩蛋（2句，10秒）：一个冷知识或专业概念的大白话翻译
 5. 互动结尾（1句，5秒）：引导评论
 6. 口播合规声明（1句）："{self.COMPLIANCE_DISCLAIMER}"
