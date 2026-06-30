@@ -181,6 +181,87 @@ class MiaoXiangClient:
         return tables
 
     # ═══════════════════════════════════════
+    # 板块行情
+    # ═══════════════════════════════════════
+
+    def get_sector_performance(self, top_n: int = 15) -> List[Dict[str, Any]]:
+        """
+        获取今日申万一级行业板块涨跌幅排行（基于涨幅前200股聚合）
+
+        Returns:
+            按板块热度排序的列表，每项含:
+              sector: 申万一级行业名称
+              avg_change_pct: 该板块在涨幅榜中的平均涨幅
+              stock_count: 涨幅榜中该板块股票数量（越多表示板块越强势）
+              heat_score: avg_change_pct × stock_count（综合热度）
+        """
+        raw = self.select_stocks_raw('今日涨幅居前的行业板块')
+        inner = raw.get('data', {}).get('data', {})
+        datalist = inner.get('allResults', {}).get('result', {}).get('dataList', [])
+        if not datalist:
+            return []
+
+        # 找行业分类字段（含 BOARD_NAME_TOTAL 的键）
+        sample = datalist[0]
+        industry_key = next((k for k in sample if 'BOARD_NAME_TOTAL' in k), None)
+        if not industry_key:
+            return []
+
+        from collections import defaultdict
+        sector_map: Dict[str, list] = defaultdict(list)
+        for row in datalist:
+            full_path = row.get(industry_key, '') or ''
+            sector = full_path.split('-')[0].strip() if full_path else ''
+            if not sector:
+                continue
+            try:
+                chg = float(row.get('CHG', 0) or 0)
+                sector_map[sector].append(chg)
+            except (TypeError, ValueError):
+                pass
+
+        results = []
+        for sector, changes in sector_map.items():
+            avg = round(sum(changes) / len(changes), 2)
+            count = len(changes)
+            results.append({
+                'sector': sector,
+                'avg_change_pct': avg,
+                'stock_count': count,
+                'heat_score': round(avg * count, 1),
+            })
+
+        results.sort(key=lambda x: x['heat_score'], reverse=True)
+        return results[:top_n]
+
+    def get_sector_news_today(self, query: str = '今日A股热门板块涨跌情况') -> List[Dict[str, Any]]:
+        """
+        获取今日板块行情新闻，按日期过滤确保只返回当日数据
+
+        Returns:
+            今日新闻列表，每项含 title / content / date / source
+        """
+        from datetime import datetime
+        today = datetime.now().strftime('%Y-%m-%d')
+
+        raw = self.search_news_raw(query)
+        news_list = (raw.get('data', {}).get('data', {})
+                     .get('llmSearchResponse', {}).get('data', []))
+
+        result = []
+        for n in news_list:
+            date_str = n.get('date', '')
+            if not date_str.startswith(today):
+                continue
+            result.append({
+                'title': n.get('title', ''),
+                'content': n.get('content', ''),
+                'date': date_str,
+                'source': n.get('source', ''),
+            })
+        return result
+
+    # ═══════════════════════════════════════
     # 资讯搜索
     # ═══════════════════════════════════════
 
