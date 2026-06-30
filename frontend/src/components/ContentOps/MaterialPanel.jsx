@@ -1,5 +1,5 @@
-import React from 'react';
-import { Tag, Empty } from 'antd';
+import React, { useState } from 'react';
+import { Tag } from 'antd';
 import {
   DashboardOutlined, AppstoreOutlined, BulbOutlined,
   FireOutlined, FundOutlined, SyncOutlined,
@@ -13,34 +13,53 @@ const moodConfig = {
   '冷清': { color: '#8c8c8c' },
 };
 
-const MaterialPanel = ({ material }) => {
+// Collapsible section card
+const Section = ({ icon, title, count, accentColor, children, defaultOpen = false }) => {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div style={{
+      marginBottom: 10, borderRadius: 12,
+      background: '#1a1e28', border: '1px solid #252a36',
+      overflow: 'hidden',
+    }}>
+      <div
+        style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '12px 16px', cursor: 'pointer',
+          borderBottom: open ? '1px solid #252a36' : 'none',
+        }}
+        onClick={() => setOpen(o => !o)}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ color: accentColor, fontSize: 16 }}>{icon}</span>
+          <span style={{ color: '#c0c8d8', fontSize: 14, fontWeight: 500 }}>{title}</span>
+          {count != null && <span style={{ color: '#555', fontSize: 12 }}>({count})</span>}
+        </div>
+        <span style={{ color: '#4a5568', fontSize: 12 }}>{open ? '收起 ∧' : '展开 ∨'}</span>
+      </div>
+      {open && (
+        <div style={{ padding: '12px 14px' }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const MaterialPanel = ({ material, compact = false }) => {
   if (!material) {
     return (
-      <div style={{ textAlign: 'center', padding: 60 }}>
-        <Empty description={<span style={{ color: '#666' }}>点击「生成素材」开始</span>}
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-          style={{ opacity: 0.6 }}
-        />
+      <div style={{ textAlign: 'center', padding: '60px 0', color: '#555', fontSize: 13 }}>
+        点击「生成素材」开始
       </div>
     );
   }
 
   const overview = material.market_overview;
-  const sectors = material.hot_sectors || [];
+  const sectors = material.hot_boards || material.hot_sectors || [];
   const reviews = material.sector_review || [];
   const topics = material.hot_topics || [];
   const nugget = material.knowledge_seed;
-
-  const sectionStyle = { marginBottom: 20 };
-  const headerStyle = {
-    color: '#b0bec5', fontSize: 13, fontWeight: 500, marginBottom: 10,
-    display: 'flex', alignItems: 'center', gap: 6,
-    borderBottom: '1px solid #252a36', paddingBottom: 6,
-  };
-  const cardStyle = {
-    padding: '10px 14px', marginBottom: 8, borderRadius: 6,
-    background: '#1a1e28', border: '1px solid #313a4d',
-  };
 
   const pctColor = (v) => {
     const s = String(v || '');
@@ -63,18 +82,23 @@ const MaterialPanel = ({ material }) => {
     return String(v);
   };
 
+  const cardStyle = {
+    padding: '10px 12px', marginBottom: 8, borderRadius: 8,
+    background: '#141720', border: '1px solid #313a4d',
+  };
+
   return (
     <div>
       {/* 市场总览 */}
       {overview && (
-        <div style={sectionStyle}>
-          <div style={headerStyle}>
-            <DashboardOutlined style={{ color: '#1890ff' }} /> 市场总览
-          </div>
+        <Section
+          icon={<DashboardOutlined />} title="市场总览"
+          accentColor="#1890ff" defaultOpen={!compact}
+        >
           <div style={{
-            ...cardStyle,
-            background: 'linear-gradient(135deg, #1a1e28, #252a36)',
-            border: '1px solid #1890ff',
+            padding: '10px 14px', borderRadius: 8,
+            background: 'linear-gradient(135deg, #141720, #1e2538)',
+            border: '1px solid rgba(24,144,255,0.4)',
           }}>
             <div style={{ color: '#e0e0e0', fontSize: 13, fontWeight: 500, marginBottom: 8 }}>
               {overview.summary}
@@ -82,7 +106,7 @@ const MaterialPanel = ({ material }) => {
             {overview.key_indices && (
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 6 }}>
                 {Object.entries(overview.key_indices).map(([name, val]) => (
-                  <span key={name} style={{ fontSize: 11 }}>
+                  <span key={name} style={{ fontSize: 12 }}>
                     <span style={{ color: '#8c8c8c' }}>{name} </span>
                     <span style={{ color: pctColor(val), fontWeight: 600 }}>{val}</span>
                   </span>
@@ -91,7 +115,7 @@ const MaterialPanel = ({ material }) => {
             )}
             {overview.mood && (
               <Tag style={{
-                margin: 0, fontSize: 10,
+                margin: 0, fontSize: 11,
                 color: (moodConfig[overview.mood] || moodConfig['纠结']).color,
                 background: 'transparent',
                 border: `1px solid ${(moodConfig[overview.mood] || moodConfig['纠结']).color}`,
@@ -100,20 +124,19 @@ const MaterialPanel = ({ material }) => {
               </Tag>
             )}
           </div>
-        </div>
+        </Section>
       )}
 
-      {/* 热门行业 */}
-      <div style={sectionStyle}>
-        <div style={headerStyle}>
-          <AppstoreOutlined style={{ color: '#722ed1' }} /> 热门行业
-          {sectors.length > 0 && <span style={{ color: '#666', fontSize: 11 }}>({sectors.length})</span>}
-        </div>
+      {/* 热门板块 */}
+      <Section
+        icon={<AppstoreOutlined />} title="热门板块"
+        count={sectors.length} accentColor="#722ed1"
+      >
         {sectors.length === 0 ? (
-          <div style={{ color: '#555', fontSize: 12, textAlign: 'center', padding: 16 }}>暂无数据</div>
+          <div style={{ color: '#555', fontSize: 12, textAlign: 'center', padding: 12 }}>暂无数据</div>
         ) : sectors.map((s, i) => (
           <div key={i} style={cardStyle}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
               <span style={{ color: '#e0e0e0', fontSize: 13, fontWeight: 500 }}>{s.sector_name}</span>
               {s.change_pct && s.change_pct !== 'N/A' && (
                 <span style={{ color: pctColor(s.change_pct), fontSize: 12, fontWeight: 600 }}>
@@ -124,42 +147,40 @@ const MaterialPanel = ({ material }) => {
                 <span style={{ color: '#666', fontSize: 10 }}>{s.turnover}</span>
               )}
             </div>
-            <div style={{ color: '#8c8c8c', fontSize: 11, lineHeight: 1.6 }}>
+            <div style={{ color: '#8c8c8c', fontSize: 12, lineHeight: 1.6 }}>
               <div style={{ color: '#d0d0d0' }}>{s.driver}</div>
               {s.capital_flow && safeText(s.capital_flow) && (
-                <div style={{ marginTop: 2, display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <FundOutlined style={{ color: '#1890ff', fontSize: 10 }} />
+                <div style={{ marginTop: 3, display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <FundOutlined style={{ color: '#1890ff', fontSize: 11 }} />
                   <span style={{ color: '#1890ff' }}>{safeText(s.capital_flow)}</span>
                 </div>
               )}
               {s.rotation_context && (
-                <div style={{ color: '#faad14', marginTop: 2, fontSize: 10 }}>{s.rotation_context}</div>
+                <div style={{ color: '#faad14', marginTop: 3, fontSize: 11 }}>{s.rotation_context}</div>
               )}
               {s.life_connection && (
-                <div style={{ color: '#8c8c8c', marginTop: 2 }}>{s.life_connection}</div>
-              )}
-              {s.pool_analysis && safeText(s.pool_analysis) && (
-                <div style={{ color: '#52c41a', marginTop: 2, fontSize: 10 }}>深度分析: {safeText(s.pool_analysis)}</div>
+                <div style={{ marginTop: 3 }}>{s.life_connection}</div>
               )}
               {s.related_stocks?.length > 0 && (
-                <div style={{ marginTop: 4, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                   {s.related_stocks.map((st, j) => (
-                    <Tag key={j} style={{ margin: 0, fontSize: 10, background: '#252a36', border: '1px solid #313a4d', color: '#aaa' }}>{st}</Tag>
+                    <Tag key={j} style={{ margin: 0, fontSize: 10, background: '#252a36', border: '1px solid #313a4d', color: '#aaa' }}>
+                      {st}
+                    </Tag>
                   ))}
                 </div>
               )}
             </div>
           </div>
         ))}
-      </div>
+      </Section>
 
       {/* 板块复盘 */}
       {reviews.length > 0 && (
-        <div style={sectionStyle}>
-          <div style={headerStyle}>
-            <SyncOutlined style={{ color: '#eb2f96' }} /> 板块复盘（昨日提及）
-            <span style={{ color: '#666', fontSize: 11 }}>({reviews.length})</span>
-          </div>
+        <Section
+          icon={<SyncOutlined />} title="板块复盘"
+          count={reviews.length} accentColor="#eb2f96"
+        >
           {reviews.map((r, i) => (
             <div key={i} style={cardStyle}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
@@ -182,49 +203,46 @@ const MaterialPanel = ({ material }) => {
                   </Tag>
                 )}
               </div>
-              <div style={{ color: '#d0d0d0', fontSize: 11, lineHeight: 1.6 }}>
-                {r.analysis}
-              </div>
+              <div style={{ color: '#d0d0d0', fontSize: 12, lineHeight: 1.6 }}>{r.analysis}</div>
               {r.outlook && (
-                <div style={{ color: '#8c8c8c', fontSize: 10, marginTop: 4 }}>{r.outlook}</div>
+                <div style={{ color: '#8c8c8c', fontSize: 11, marginTop: 4 }}>{r.outlook}</div>
               )}
             </div>
           ))}
-        </div>
+        </Section>
       )}
 
       {/* 热点话题 */}
-      <div style={sectionStyle}>
-        <div style={headerStyle}>
-          <FireOutlined style={{ color: '#fa8c16' }} /> 热点话题
-          {topics.length > 0 && <span style={{ color: '#666', fontSize: 11 }}>({topics.length})</span>}
-        </div>
+      <Section
+        icon={<FireOutlined />} title="热点话题"
+        count={topics.length} accentColor="#fa8c16"
+      >
         {topics.length === 0 ? (
-          <div style={{ color: '#555', fontSize: 12, textAlign: 'center', padding: 16 }}>暂无话题</div>
+          <div style={{ color: '#555', fontSize: 12, textAlign: 'center', padding: 12 }}>暂无话题</div>
         ) : topics.map((t, i) => (
           <div key={i} style={cardStyle}>
             <div style={{ color: '#e0e0e0', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>
               {t.title}
             </div>
-            <div style={{ color: '#8c8c8c', fontSize: 11, lineHeight: 1.6 }}>
+            <div style={{ color: '#8c8c8c', fontSize: 12, lineHeight: 1.6 }}>
               <div>{t.summary}</div>
-              {t.market_impact && <div style={{ color: '#d0d0d0', marginTop: 2 }}>影响: {t.market_impact}</div>}
-              {t.life_angle && <div style={{ color: '#faad14', marginTop: 2 }}>{t.life_angle}</div>}
-              {t.source && <div style={{ color: '#555', marginTop: 2, fontSize: 10 }}>来源: {t.source}</div>}
+              {t.market_impact && <div style={{ color: '#d0d0d0', marginTop: 3 }}>影响: {t.market_impact}</div>}
+              {t.life_angle && <div style={{ color: '#faad14', marginTop: 3 }}>{t.life_angle}</div>}
+              {t.source && <div style={{ color: '#555', marginTop: 3, fontSize: 11 }}>来源: {t.source}</div>}
             </div>
           </div>
         ))}
-      </div>
+      </Section>
 
-      {/* 小知识科普 */}
+      {/* 知识科普 */}
       {nugget && (
-        <div style={sectionStyle}>
-          <div style={headerStyle}>
-            <BulbOutlined style={{ color: '#13c2c2' }} /> 小知识科普
-          </div>
+        <Section
+          icon={<BulbOutlined />} title="知识科普"
+          accentColor="#13c2c2"
+        >
           <div style={{
-            ...cardStyle,
-            border: '1px solid #13c2c2',
+            padding: '10px 12px', borderRadius: 8,
+            border: '1px solid rgba(19,194,194,0.4)',
             background: 'rgba(19,194,194,0.04)',
           }}>
             <div style={{ color: '#13c2c2', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
@@ -246,7 +264,7 @@ const MaterialPanel = ({ material }) => {
               </div>
             )}
           </div>
-        </div>
+        </Section>
       )}
     </div>
   );
