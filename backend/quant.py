@@ -1023,35 +1023,41 @@ def get_futu_minute_data(symbol, quote_ctx):
     """
     通过 Futu OpenD 获取分时数据，支持 A 股(SH/SZ)、港股(HK)。
     symbol 格式：000001.SZ / 600000.SH / 00700.HK
-    返回 [{time, price, volume}]
+    返回 {'points': [{time, price, volume, last_close}], 'prev_close': float|None}
     """
     from futu import SubType, RET_OK
     code_parts = symbol.split('.')
     if len(code_parts) != 2:
-        return []
+        return {'points': [], 'prev_close': None}
     stock_code, market = code_parts[0], code_parts[1].upper()
     market_map = {'SH': 'SH', 'SZ': 'SZ', 'HK': 'HK'}
     futu_market = market_map.get(market)
     if not futu_market:
-        return []
+        return {'points': [], 'prev_close': None}
     futu_symbol = f'{futu_market}.{stock_code}'
     ret_sub, _ = quote_ctx.subscribe([futu_symbol], [SubType.RT_DATA], subscribe_push=False)
     if ret_sub != RET_OK:
-        return []
+        return {'points': [], 'prev_close': None}
     ret, df = quote_ctx.get_rt_data(futu_symbol)
     if ret != RET_OK or df is None or df.empty:
-        return []
+        return {'points': [], 'prev_close': None}
     from datetime import datetime
     today = datetime.now().strftime('%Y-%m-%d')
-    data = []
+    prev_close = None
+    points = []
     for _, row in df.iterrows():
+        if prev_close is None and row.get('last_close'):
+            try:
+                prev_close = float(row['last_close'])
+            except (TypeError, ValueError):
+                pass
         if str(row['time']).startswith(today):
-            data.append({
+            points.append({
                 'time': row['time'],
                 'price': float(row['cur_price']),
-                'volume': float(row['volume'])
+                'volume': float(row['volume']),
             })
-    return data
+    return {'points': points, 'prev_close': prev_close}
 
 def analyze_fundamental(symbol):
     """
