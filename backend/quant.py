@@ -1015,20 +1015,32 @@ def analyze_multi_factor_entry_exit(symbol):
     return result
 
 def get_hk_minute_data(symbol, quote_ctx):
+    """获取港股分时数据（兼容旧调用），返回 [{time, price, volume}]"""
+    return get_futu_minute_data(symbol, quote_ctx)
+
+
+def get_futu_minute_data(symbol, quote_ctx):
     """
-    获取港股分时数据，返回 [{time, price, volume}]
+    通过 Futu OpenD 获取分时数据，支持 A 股(SH/SZ)、港股(HK)。
+    symbol 格式：000001.SZ / 600000.SH / 00700.HK
+    返回 [{time, price, volume}]
     """
     from futu import SubType, RET_OK
-    stock_code = symbol.split('.')[0]
-    futu_symbol = f'HK.{stock_code}'
-    # 先订阅分时数据
-    ret_sub, err_message = quote_ctx.subscribe([futu_symbol], [SubType.RT_DATA], subscribe_push=False)
+    code_parts = symbol.split('.')
+    if len(code_parts) != 2:
+        return []
+    stock_code, market = code_parts[0], code_parts[1].upper()
+    market_map = {'SH': 'SH', 'SZ': 'SZ', 'HK': 'HK'}
+    futu_market = market_map.get(market)
+    if not futu_market:
+        return []
+    futu_symbol = f'{futu_market}.{stock_code}'
+    ret_sub, _ = quote_ctx.subscribe([futu_symbol], [SubType.RT_DATA], subscribe_push=False)
     if ret_sub != RET_OK:
         return []
     ret, df = quote_ctx.get_rt_data(futu_symbol)
     if ret != RET_OK or df is None or df.empty:
         return []
-    # 只取今天的数据
     from datetime import datetime
     today = datetime.now().strftime('%Y-%m-%d')
     data = []
@@ -1924,9 +1936,129 @@ def batch_plate_market_snapshot(symbols, quote_ctx=None):
             for i in range(0, len(syms), 20):
                 batch = syms[i:i+20]
                 ret, data = ctx.get_market_snapshot(batch)
-                
+
                 if ret == RET_OK and data is not None and not data.empty:
                     for idx, row in data.iterrows():
                         results[row['code']] = row.to_dict()
-        
+
         return results
+
+
+def get_concept_board_snapshot(board_names: list, quote_ctx=None) -> dict:
+    """
+    给定概念板块名称列表，先查 Futu 官方板块代码，再获取实时快照行情。
+
+    Args:
+        board_names: 板块名称列表（不要求精确匹配），如 ['WiFi6', 'MiniLED', '玻璃基板']
+        quote_ctx:   Futu 行情上下文（None 时自动创建）
+
+    Returns:
+        {
+            'WiFi6': {
+                'code': 'SH.LIST0653',
+                'official_name': 'WIFI6',
+                'change_pct': 5.91,        # (last - prev_close) / prev_close * 100
+                'turnover': 68992290866.0,  # 成交额（元）
+                'raise_count': 48,          # 上涨家数
+                'fall_count': 3,            # 下跌家数
+            },
+            ...
+        }
+    """
+    from futu import OpenQuoteContext, Market, RET_OK, Plate
+    import re
+
+    def _normalize(name: str) -> str:
+        name = re.sub(r'[\(（【\[].*?[\)）】\]]', '', name)
+        # 去除常见后缀，便于 "CPO概念" → "CPO" 匹配 "共封装光模块(CPO)"
+        name = name.replace('板块', '').replace('概念', '')
+        return name.upper().replace(' ', '').replace('-', '').replace('_', '')
+
+    def _ctx_wrapper(ctx):
+        """支持 with 上下文和直接传入两种方式"""
+        class _CM:
+            def __enter__(self): return ctx
+            def __exit__(self, *a): pass
+        return _CM()
+
+    def _do_query(ctx):
+        # 1. 获取 SH 概念板块列表（SH/SZ 共用同一套 LIST 代码）
+        ret, plate_df = ctx.get_plate_list(Market.SH, Plate.CONCEPT)
+        if ret != RET_OK or plate_df is None or plate_df.empty:
+            return {}
+
+        # 建立 规范名 → (code, official_name) 的映射（同时保留原始名用于括号内关键词匹配）
+        code_map = {}          # norm → (code, official_name)
+        raw_name_map = {}      # official_name_upper → (code, official_name)
+        for _, row in plate_df.iterrows():
+            norm = _normalize(row['plate_name'])
+            code_map[norm] = (row['code'], row['plate_name'])
+            raw_name_map[row['plate_name'].upper()] = (row['code'], row['plate_name'])
+
+        # 2. 模糊匹配：每个输入名称找最佳对应代码
+        matched = {}   # input_name → (code, official_name)
+        for name in board_names:
+            norm_q = _normalize(name)
+            # 精确匹配（规范化后）
+            if norm_q in code_map:
+                matched[name] = code_map[norm_q]
+                continue
+            # 原始名中含括号关键词匹配（如 CPO命中 共封装光模块(CPO)）
+            # 同时用原始名和规范化名（去掉"概念"/"板块"后）搜索
+            raw_match = None
+            for q_candidate in {name.upper().replace(' ', ''), norm_q}:
+                for raw_k, v in raw_name_map.items():
+                    if q_candidate and q_candidate in raw_k:
+                        raw_match = v
+                        break
+                if raw_match:
+                    break
+            if raw_match:
+                matched[name] = raw_match
+                continue
+            # 子串匹配（输入是官方名子串，或反之）
+            best = None
+            for norm_k, v in code_map.items():
+                if norm_q in norm_k or norm_k in norm_q:
+                    # 优先选名称更短（更精确）的
+                    if best is None or len(norm_k) < len(_normalize(best[1])):
+                        best = v
+            if best:
+                matched[name] = best
+
+        if not matched:
+            return {}
+
+        # 3. 批量查快照
+        codes = list({v[0] for v in matched.values()})
+        ret2, snap_df = ctx.get_market_snapshot(codes)
+        if ret2 != RET_OK or snap_df is None or snap_df.empty:
+            return {}
+
+        snap = {row['code']: row.to_dict() for _, row in snap_df.iterrows()}
+
+        # 4. 组装结果
+        result = {}
+        for name, (code, official_name) in matched.items():
+            row = snap.get(code)
+            if not row:
+                continue
+            last = row.get('last_price') or 0
+            prev = row.get('prev_close_price') or 0
+            change_pct = round((last - prev) / prev * 100, 2) if prev else None
+            turnover = row.get('turnover')
+            result[name] = {
+                'code': code,
+                'official_name': official_name,
+                'change_pct': change_pct,
+                'turnover': turnover,
+                'raise_count': row.get('plate_raise_count'),
+                'fall_count': row.get('plate_fall_count'),
+            }
+        return result
+
+    if quote_ctx is not None:
+        return _do_query(quote_ctx)
+    else:
+        with OpenQuoteContext(host='127.0.0.1', port=11111) as ctx:
+            return _do_query(ctx)
