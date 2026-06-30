@@ -53,10 +53,12 @@ export default function MinuteChartPanel({ sector, date, onClose }) {
       const batch = res.data || {};
       const results = {};
       (stocks || []).forEach(s => {
-        const all = Array.isArray(batch[s.stock_code]) ? batch[s.stock_code] : [];
-        const pts = all.filter(p => p.time?.startsWith(date));
-        const prevClose = pts.length && pts[0].last_close ? pts[0].last_close : null;
-        results[s.stock_code] = { points: pts, prevClose };
+        const entry = batch[s.stock_code] || {};
+        const raw = Array.isArray(entry) ? entry : (entry.points || []);
+        const pts = raw.filter(p => p.time?.startsWith(date));
+        const prevClose = entry.prev_close ?? (pts.length && pts[0].last_close ? pts[0].last_close : null);
+        const limitPrice = entry.limit_price ?? null;
+        results[s.stock_code] = { points: pts, prevClose, limitPrice };
       });
       setStockData(results);
     } catch {
@@ -117,6 +119,7 @@ export default function MinuteChartPanel({ sector, date, onClose }) {
                 stock={s}
                 points={stockData[s.stock_code]?.points || []}
                 prevClose={stockData[s.stock_code]?.prevClose ?? null}
+                limitPrice={stockData[s.stock_code]?.limitPrice ?? null}
                 index={i}
               />
             ))}
